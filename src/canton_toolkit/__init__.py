@@ -8,6 +8,7 @@ from .core.venue import (
     VenueRequestError,
 )
 from .venues.cantex import CantexAdapter
+from .venues.dexref import DemoAllocationAuthorizer, DexRefAdapter
 
 __all__ = [
     "Balance",
@@ -20,4 +21,6 @@ __all__ = [
     "VenueAuthError",
     "VenueRequestError",
     "CantexAdapter",
+    "DexRefAdapter",
+    "DemoAllocationAuthorizer",
 ]

@@ -1,8 +1,9 @@
 # Canton Trading Toolkit
 
 An open-source algorithmic-trading layer for the [Canton Network](https://www.canton.network/):
-one typed async Python interface to quote, trade, and run strategies on Canton venues —
-starting with [Cantex](https://cantex.io/), designed venue-agnostic from day one.
+one typed async Python interface to quote, trade, and run strategies on Canton venues,
+designed venue-agnostic from day one. Two adapters today: [Cantex](https://cantex.io/) and
+the [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation).
 
 ## Why this exists
 
@@ -35,8 +36,9 @@ that missing layer once, in the open.
 
 ## Live-validated
 
-Verified against Cantex **mainnet** on 2026-07-14 with real credentials
-(read-only smoke — auth, pool listing, quoting):
+**Cantex adapter** — verified against **mainnet** with real credentials:
+
+- 2026-07-14, read path: auth, pool listing, quoting:
 
 ```
 base url: https://api.cantex.io
@@ -46,9 +48,12 @@ first pool pair: Amulet/USDCx
 quote: sell 1 Amulet -> 0.1321382958 USDCx (trade price 0.1321382958)
 ```
 
-The swap write-path is implemented and unit-tested but not yet exercised live (it needs a
-funded account; Cantex testnet uses per-network keys, so mainnet credentials don't carry
-over).
+- 2026-07-17, write path: executed a real swap on the `CC-USDC` pool — sold 10.0 Amulet,
+  received 1.2981357151 USDCx (trade price 0.12963), confirmed on ledger.
+
+**Reference DEX adapter** — verified end to end on 2026-07-18 against the operator
+backend running in local demo mode: pools, holdings aggregation into balances, quotes
+with derived price/slippage/fee, and an executed demo swap that moved pool reserves.
 
 ## Architecture
 
@@ -58,8 +63,12 @@ interface with a `VenueError` hierarchy. The first adapter,
 `CantexAdapter` (`canton_toolkit.venues.cantex`), wraps the official
 [`cantex_sdk`](https://github.com/caviarnine/cantex_sdk) async client. Auth,
 signing, and transport all live in the SDK; the adapter only translates its
-models and exceptions into the venue-agnostic core. Every integration point is
-mapped to its exact SDK source location in [`SOURCES.md`](SOURCES.md).
+models and exceptions into the venue-agnostic core. The second adapter,
+`DexRefAdapter` (`canton_toolkit.venues.dexref`), speaks the reference DEX
+operator-backend HTTP API directly (no vendor SDK exists) and delegates the
+venue-specific wallet-authored allocation step to a pluggable
+`AllocationAuthorizer` strategy. Every integration point of both adapters is
+mapped to its exact upstream source location in [`SOURCES.md`](SOURCES.md).
 
 ## Install
 
@@ -129,11 +138,13 @@ either way).
 
 ## Roadmap
 
-1. **Venue connector** (this repo, live) — unified interface, Cantex adapter,
-   validated against mainnet
+1. **Venue connector** (this repo, live) — unified interface; Cantex adapter validated
+   on mainnet (read + write), reference-DEX adapter validated against the operator
+   backend in demo mode
 2. **Reference liquidity bots** — grid/DCA engines that keep measurable resting
    depth on thin pools, with a DevNet dry-run mode
-3. **Second venue adapter** — the same strategy config running unmodified on two venues
+3. **Same strategy, two venues** — one strategy config running unmodified on both
+   adapters against live networks
 4. **MCP agent-execution interface** — trading as typed tools for any MCP-capable
    agent framework, behind enforced risk limits
 

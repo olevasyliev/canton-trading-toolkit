@@ -71,3 +71,48 @@ commit cloned from `https://github.com/caviarnine/cantex_sdk`, file
 - Default base URL follows the SDK class default (testnet, `_sdk.py:1286`).
   The example script defaults to mainnet (`api.cantex.io`, `examples/example.py:48`);
   the adapter deliberately defaults to testnet per the toolkit's scope.
+
+---
+
+# Reference DEX adapter (`venues/dexref.py`)
+
+Upstream: [srikanth-bitdynamics/Canton-Dex-Reference-Implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation),
+`services/operator-backend` (no vendor SDK; the adapter speaks the HTTP API
+directly). Verified against a live demo-mode backend + source on 2026-07-18.
+
+## Endpoints consumed
+
+| Adapter call | Endpoint | Upstream source |
+|---|---|---|
+| `connect()` | `GET /v1/context`, `GET /v1/status` | `http/index.ts` |
+| `pools()` | `GET /v1/pools` | `http/index.ts`, shapes `types.ts` |
+| `quote()` | `POST /v1/swaps/quote` | `http/index.ts:941`; NB request field `poolId` takes the pool **contract id** |
+| `balances()` | `GET /v1/holdings?owner=` | `http/index.ts`; per-contract rows, aggregated client-side |
+| `swap()` | `POST /v1/pools/swap/request` (only when the authorizer needs a spec) + `POST /v1/pools/swap` | `pool/index.ts:37-84` (inputs), `:345-454` (flow) |
+| `transfer()` | none — venue has no transfer surface; always raises | — |
+
+## Model mapping / judgment calls
+
+- `Instrument(admin, id)` ← pool `admin` + `baseInstrumentId`/`quoteInstrumentId`
+  (holdings rows carry `admin` + `instrumentId`). No instrument-metadata
+  endpoint exists, so `Balance.symbol = Balance.name = instrument id`.
+- `Quote`: venue returns only `outputAmount`. `trade_price` = out/in;
+  `slippage` = 1 − realized/spot with spot from pool `reserves`;
+  `fee_percentage` = `feeBps`/10000 (fraction, matching the Cantex
+  convention); `estimated_time_seconds` = 0 (not provided).
+- `SwapResult`: `amountOut` from the `PoolRules_Swap` result;
+  `admin_fee_amount` = 0 and `liquidity_fee_amount` = input × fee fraction
+  (pool fee accrues entirely to LPs, `dev-server.ts:115`); `market` =
+  pool `poolId` (e.g. `BTC-USDC`).
+- Amount strings are ≤10-dp fixed-point per `DECIMAL_RE`
+  (`http/validate.ts:25`); party ids must be canonical
+  `hint::hexfingerprint{8,}` unless the server runs with
+  `DEX_ALLOW_BARE_PARTIES=1` (`http/validate.ts:38-49`).
+- The swapper-side allocation is wallet-authored on this venue
+  (`pool/index.ts:69-84`); the adapter delegates it to a pluggable
+  `AllocationAuthorizer`. The in-memory demo mock ignores the allocation cid
+  (`dev-server.ts:94-160`), so `DemoAllocationAuthorizer` supplies a
+  synthetic one; a testnet authorizer will drive the wallet relay
+  (`http/index.ts:655`, needs `DEX_DEV_WALLET_RELAY=1` + a real ledger).
+- Errors: HTTP 401 → `VenueAuthError`; other 4xx/5xx and transport errors →
+  `VenueRequestError`, carrying the server's `{code, error}` envelope.
