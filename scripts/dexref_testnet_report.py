@@ -190,11 +190,19 @@ async def quoting(
 
 
 async def crossing(
-    client: httpx.AsyncClient, base: str, maker: str, taker: str, rep: Report
+    client: httpx.AsyncClient,
+    base: str,
+    maker: str,
+    taker: str,
+    resting: list[tuple[str, str]],
+    rep: Report,
 ) -> list[tuple[str, str]]:
-    head("3. A CROSSED BOOK")
+    head("3. A CROSSED BOOK, SETTLED FROM OUTSIDE")
 
-    cids: list[tuple[str, str]] = []
+    before_maker = await balances(client, base, maker)
+    before_taker = await balances(client, base, taker)
+
+    cids: list[tuple[str, str]] = list(resting)
     m = await place_order(client, base, maker, "Bid", "90000", "0.0002")
     if m.get("orderCid"):
         cids.append((maker, m["orderCid"]))
@@ -210,18 +218,96 @@ async def crossing(
     preview = await client.get(f"{base}/v1/orders/matches", params={"pair": "dBTC/dUSD"})
     matches = preview.json().get("matches", []) if preview.status_code == 200 else []
     print(f"  GET /v1/orders/matches -> {preview.status_code}, {len(matches)} crossing pairs")
-
-    execute = await client.post(f"{base}/v1/orders/match", json={"pair": "dBTC/dUSD"})
-    hosted = await client.post(f"{base}/v1/testnet/match", json={})
-    print(f"  POST /v1/orders/match  -> {execute.status_code}")
-    print(f"  POST /v1/testnet/match -> {hosted.status_code}")
-
     rep.check("the matcher sees the cross", len(matches) > 0, f"{len(matches)} pairs")
-    rep.check(
-        "an external party can settle a crossed book (open: F24)",
-        execute.status_code == 200 or hosted.status_code == 200,
-        f"POST /v1/orders/match {execute.status_code}, POST /v1/testnet/match {hosted.status_code}",
+
+    # The hosted trigger takes no party, no cid and no amount: it runs the
+    # operator's own matcher over one listed pair and clears whatever crosses.
+    hosted = await client.post(
+        f"{base}/v1/testnet/match", json={"base": BASE_PAIR[0], "quote": BASE_PAIR[1]}
     )
+    receipt = hosted.json() if hosted.headers.get("content-type", "").startswith("application/json") else {}
+    print(f"  POST /v1/testnet/match -> {hosted.status_code} {json.dumps(receipt)[:400]}")
+
+    rep.check(
+        "an external party can settle a crossed book",
+        hosted.status_code in (200, 207),
+        f"{hosted.status_code}, settled {receipt.get('settled')}, failed {receipt.get('failed')}",
+    )
+    settled = [o for o in receipt.get("matches", []) if not o.get("errorCode")]
+    rep.check(
+        "at least one crossed pair settled",
+        receipt.get("settled", 0) > 0,
+        f"settled {receipt.get('settled')} of {len(receipt.get('matches', []))}",
+    )
+
+    # Attribute every settled leg to the party that owns the order. The matcher
+    # clears the whole crossed book, which includes the levels section 2 left
+    # resting, so the expected balance move is a sum over legs, not one fill.
+    owner_of = {cid: owner for owner, cid in cids}
+    ours = [o for o in settled if o.get("buyCid") in owner_of or o.get("sellCid") in owner_of]
+    rep.check("our own orders are among the settled matches", bool(ours), f"{len(ours)} of {len(settled)}")
+
+    expected: dict[str, dict[str, Decimal]] = {
+        p: {BASE_PAIR[0]: Decimal(0), BASE_PAIR[1]: Decimal(0)} for p in (maker, taker)
+    }
+    for o in ours:
+        qty, price = Decimal(str(o["quantity"])), Decimal(str(o["price"]))
+        buyer, seller = owner_of.get(o.get("buyCid", "")), owner_of.get(o.get("sellCid", ""))
+        print(f"  leg: {qty} dBTC at {price} = {qty * price} dUSD  buyer={'ours' if buyer else 'other'} seller={'ours' if seller else 'other'}")
+        if buyer in expected:
+            expected[buyer][BASE_PAIR[0]] += qty
+            expected[buyer][BASE_PAIR[1]] -= qty * price
+        if seller in expected:
+            expected[seller][BASE_PAIR[0]] -= qty
+            expected[seller][BASE_PAIR[1]] += qty * price
+
+    await asyncio.sleep(4)
+    after_maker = await balances(client, base, maker)
+    after_taker = await balances(client, base, taker)
+    show("maker after the match", after_maker)
+    show("taker after the match", after_taker)
+
+    for label, party, before_bal, after_bal in (
+        ("buyer", maker, before_maker, after_maker),
+        ("seller", taker, before_taker, after_taker),
+    ):
+        for instrument in BASE_PAIR:
+            moved = after_bal[instrument]["total"] - before_bal[instrument]["total"]
+            rep.check(
+                f"the {label}'s {instrument} moved by exactly the settled legs",
+                moved == expected[party][instrument],
+                f"{moved} vs {expected[party][instrument]}",
+            )
+
+    for o in ours:
+        for owner, cid, remainder in (
+            (owner_of.get(o.get("buyCid", "")), o.get("buyCid"), o.get("buyRemainderCid")),
+            (owner_of.get(o.get("sellCid", "")), o.get("sellCid"), o.get("sellRemainderCid")),
+        ):
+            if owner is None:
+                continue
+            if (owner, cid) in cids:
+                cids.remove((owner, cid))
+            if remainder:
+                cids.append((owner, remainder))
+                owner_of[remainder] = owner
+
+    trades = (await client.get(f"{base}/v1/trades", params={"trader": maker})).json()
+    rep.check("the fill is visible to the buyer under ?trader=", isinstance(trades, list) and bool(trades), f"{len(trades) if isinstance(trades, list) else trades} rows")
+
+    # A matcher run that clears everything it can leaves an uncrossed book.
+    # Anything still crossing is a level the public book publishes and the
+    # matcher will not fill, which is what a market-data client quotes off.
+    book = (await client.get(f"{base}/v1/orders/book", params={"pair": "dBTC/dUSD"})).json()
+    left = (await client.get(f"{base}/v1/orders/matches", params={"pair": "dBTC/dUSD"})).json()
+    best_bid = max((Decimal(lvl["price"]) for lvl in book["bids"]), default=None)
+    best_ask = min((Decimal(lvl["price"]) for lvl in book["asks"]), default=None)
+    rep.check(
+        "the book is uncrossed once the matcher has run",
+        best_bid is None or best_ask is None or best_bid < best_ask,
+        f"best bid {best_bid}, best ask {best_ask}, matcher now sees {len(left.get('matches', []))} pairs",
+    )
+
     return cids
 
 
@@ -374,9 +460,25 @@ async def liquidity(client: httpx.AsyncClient, base: str, party: str, pool_cid: 
     )
     body = add.json()
     rep.check(
-        "the receipt reports what settled (reported as F25)",
+        "the receipt reports the settled quote amount, not the request",
         Decimal(str(body.get("quoteAmount", "0"))) == spent_quote,
         f"receipt says {body.get('quoteAmount')}, ledger moved {spent_quote}",
+    )
+    rep.check(
+        "the receipt reports the settled base amount",
+        Decimal(str(body.get("baseAmount", "0"))) == spent_base,
+        f"receipt says {body.get('baseAmount')}, ledger moved {spent_base}",
+    )
+    rep.check(
+        "the receipt reports the off-ratio refund",
+        Decimal(str(body.get("quoteRefunded", "-1"))) == Decimal("200") - spent_quote
+        and Decimal(str(body.get("baseRefunded", "-1"))) == Decimal("0.001") - spent_base,
+        f"base {body.get('baseRefunded')}, quote {body.get('quoteRefunded')}",
+    )
+    rep.check(
+        "the receipt reports the LP amount actually minted",
+        Decimal(str(body.get("lpAmount", "0"))) == lp_amount,
+        f"receipt says {body.get('lpAmount')}, credited {lp_amount}",
     )
 
     rem = await client.post(
@@ -395,14 +497,45 @@ async def liquidity(client: httpx.AsyncClient, base: str, party: str, pool_cid: 
     rep.check("the LP position is fully redeemed", after_remove.get(lp_id, {}).get("total", Decimal(0)) == 0)
 
     # The indexer classifies every pool rotation as swap, add_liquidity,
-    # remove_liquidity or state_change. /v1/swaps selects kind = 'swap', and
-    # no route serves the other three, so the two rotations just written are
-    # invisible over HTTP.
-    events = (await client.get(f"{base}/v1/swaps", params={"kind": "add_liquidity"})).json()
+    # remove_liquidity or state_change. /v1/swaps used to select kind = 'swap'
+    # unconditionally, so the two rotations just written were invisible over
+    # HTTP; ?kind= now serves them.
+    # The indexer lands a row a few seconds behind settlement, so poll for the
+    # withdrawal rather than reading once and calling it missing.
+    deadline = time.monotonic() + 30
+    while True:
+        removes = (await client.get(f"{base}/v1/swaps", params={"kind": "remove_liquidity"})).json()
+        if any(Decimal(str(e.get("quoteDelta", "0"))) == -back_quote for e in removes):
+            break
+        if time.monotonic() > deadline:
+            break
+        await asyncio.sleep(1)
+    adds = (await client.get(f"{base}/v1/swaps", params={"kind": "add_liquidity"})).json()
     rep.check(
-        "liquidity events are readable over HTTP (open: F26)",
-        any(e.get("kind") != "swap" for e in events),
-        f"{len(events)} rows, all kind=swap",
+        "add_liquidity events are readable over HTTP",
+        bool(adds) and all(e.get("kind") == "add_liquidity" for e in adds),
+        f"{len(adds)} rows",
+    )
+    rep.check(
+        "remove_liquidity events are readable over HTTP",
+        bool(removes) and all(e.get("kind") == "remove_liquidity" for e in removes),
+        f"{len(removes)} rows",
+    )
+    rep.check(
+        "the deposit just settled is in the feed",
+        any(Decimal(str(e.get("quoteDelta", "0"))) == spent_quote for e in adds),
+        f"looking for quoteDelta {spent_quote}",
+    )
+    rep.check(
+        "the withdrawal just settled is in the feed",
+        any(Decimal(str(e.get("quoteDelta", "0"))) == -back_quote for e in removes),
+        f"looking for quoteDelta {-back_quote}",
+    )
+    bad = await client.get(f"{base}/v1/swaps", params={"kind": "nonsense"})
+    rep.check(
+        "an unknown kind is refused, not silently ignored",
+        bad.status_code == 400,
+        f"{bad.status_code} {bad.text[:90]}",
     )
 
 
@@ -412,7 +545,9 @@ async def cleanup(
     head("7. CANCEL AND RECONCILE")
     for owner, cid in orders:
         r = await client.post(f"{base}/v1/testnet/order/cancel", json={"party": owner, "orderCid": cid})
-        rep.check(f"cancel {cid[:12]}…", r.status_code == 200, str(r.status_code))
+        # A settled order is gone from the book; refusing to cancel it is right.
+        gone = r.status_code == 400 and "inactive" in r.text
+        rep.check(f"cancel {cid[:12]}…", r.status_code == 200 or gone, str(r.status_code))
 
     final = await balances(client, base, party)
     show("final", final)
@@ -443,11 +578,12 @@ async def main() -> int:
         print(f"party B: {party_b}")
 
         placed = await quoting(client, base, party_a, rep)
-        crossed = await crossing(client, base, party_a, party_b, rep)
+        resting = [(party_a, cid) for _s, _p, _q, cid in placed]
+        crossed = await crossing(client, base, party_a, party_b, resting, rep)
         pool_cid = await amm(client, base, party_a, rep)
         await rfq(client, base, party_a, rep)
         await liquidity(client, base, party_a, pool_cid, rep)
-        await cleanup(client, base, party_a, [(party_a, cid) for _s, _p, _q, cid in placed] + crossed, rep)
+        await cleanup(client, base, party_a, crossed, rep)
 
         head(f"RESULT: {rep.passed} passed, {rep.failed} failed")
         for label, ok, detail in rep.rows:
