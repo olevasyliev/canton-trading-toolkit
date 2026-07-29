@@ -14,8 +14,10 @@ import httpx
 import pytest
 
 from canton_toolkit import (
+    AllocationSwapRoute,
     DemoAllocationAuthorizer,
     DexRefAdapter,
+    HostedPartySwapRoute,
     Instrument,
     VenueAuthError,
     VenueRequestError,
@@ -170,11 +172,67 @@ async def test_swap_demo_flow_skips_request_step_and_maps_result() -> None:
     assert result.liquidity_fee_amount == Decimal("0.5") * Decimal("0.003")
 
 
-async def test_swap_without_authorizer_raises() -> None:
+async def test_swap_without_route_raises() -> None:
     adapter = make_adapter(dict(BASE_ROUTES), [])
     async with adapter:
-        with pytest.raises(VenueRequestError, match="allocation_authorizer"):
+        with pytest.raises(VenueRequestError, match="swap_route"):
             await adapter.swap(Decimal("0.1"), BTC, USDC)
+
+
+async def test_route_and_authorizer_are_mutually_exclusive() -> None:
+    with pytest.raises(VenueRequestError, match="not both"):
+        DexRefAdapter(
+            base_url="http://test",
+            trader_party="trader-demo",
+            allocation_authorizer=DemoAllocationAuthorizer(),
+            swap_route=HostedPartySwapRoute(),
+        )
+
+
+async def test_hosted_party_route_posts_party_and_needs_no_allocation() -> None:
+    """A deployment that hosts the trader's party authors the allocation itself."""
+    recorded: list[httpx.Request] = []
+    routes = dict(BASE_ROUTES)
+    routes[("POST", "/v1/testnet/swap")] = {
+        "updateId": "1220abcd",
+        "inputAmount": "0.5000000000",
+        "outputAmount": QUOTE_OUT,
+        "allocationCid": "00alloc",
+    }
+    adapter = make_adapter(routes, recorded, swap_route=HostedPartySwapRoute())
+    async with adapter:
+        result = await adapter.swap(Decimal("0.5"), BTC, USDC)
+    paths = [r.url.path for r in recorded]
+    assert "/v1/pools/swap" not in paths  # no wallet-authored allocation on this route
+    body = json.loads(next(r for r in recorded if r.url.path == "/v1/testnet/swap").content)
+    assert body["party"] == "trader-demo"
+    assert body["poolCid"] == "#2:0"
+    assert "swapperAllocationCid" not in body
+    assert result.output_amount == Decimal(QUOTE_OUT)
+
+
+async def test_allocation_route_is_equivalent_to_the_authorizer_shorthand() -> None:
+    recorded: list[httpx.Request] = []
+    adapter = make_adapter(
+        dict(BASE_ROUTES),
+        recorded,
+        swap_route=AllocationSwapRoute(DemoAllocationAuthorizer()),
+    )
+    async with adapter:
+        result = await adapter.swap(Decimal("0.5"), BTC, USDC)
+    body = json.loads(next(r for r in recorded if r.url.path == "/v1/pools/swap").content)
+    assert body["swapperAllocationCid"] == "#demo-alloc:0"
+    assert result.output_amount == Decimal(QUOTE_OUT)
+
+
+async def test_real_participant_pool_status_prefix_is_accepted() -> None:
+    """A real Canton participant emits PS_Active, not the demo's Active."""
+    routes = dict(BASE_ROUTES)
+    routes[("GET", "/v1/pools")] = [{**POOL_ROW, "status": "PS_Active"}]
+    adapter = make_adapter(routes, [])
+    async with adapter:
+        quote = await adapter.quote(Decimal("0.5"), BTC, USDC)
+    assert quote.returned_amount == Decimal(QUOTE_OUT)
 
 
 async def test_transfer_is_unsupported() -> None:

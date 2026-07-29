@@ -116,3 +116,65 @@ directly). Verified against a live demo-mode backend + source on 2026-07-18.
   (`http/index.ts:655`, needs `DEX_DEV_WALLET_RELAY=1` + a real ledger).
 - Errors: HTTP 401 → `VenueAuthError`; other 4xx/5xx and transport errors →
   `VenueRequestError`, carrying the server's `{code, error}` envelope.
+
+---
+
+# Ekiden adapter (`venues/ekiden.py`) — read-only market data
+
+Perpetuals venue on Canton. No SDK is used: the gateway (`ekiden-gateway`,
+Rust/Axum) is called directly over HTTP. Shapes below were captured from live
+responses on the Canton testnet gateway `https://api.cnt.ekiden.fi` on
+2026-07-27, **not** from the published OpenAPI document — see the caveat at the
+bottom. Staging is `https://api.canton.ekiden.fi`; public WebSocket streams
+exist at `wss://api.cnt.ekiden.fi/ws/public` and are not consumed yet.
+
+Public market data needs no credentials. Trading requires an Ed25519-signed
+session (`AUTHORIZE|<timestamp_ms>|<nonce>`) plus API keys, and a root-whitelist
+surface exists (`/api/v1/authorize/whitelist/*`); none of that is implemented
+here, so this adapter cannot place an order.
+
+## Endpoints consumed
+
+| Adapter method | Endpoint | Notes |
+|---|---|---|
+| `connect()` | `GET /api/v1/info` | asserts `runtime_manifest_phase == "ready"` |
+| `markets()` | `GET /api/v1/market/instruments-info` | no params; `{"list": [...]}` envelope |
+| `tickers()` | `GET /api/v1/market/tickers` | optional `symbol`; returns all markets when omitted |
+| `order_book()` | `GET /api/v1/market/orderbook` | `symbol` + `depth`; **`depth` ∈ {10, 50, 200} only** |
+| `recent_trades()` | `GET /api/v1/market/recent-trade` | `symbol`, `limit`; rows use single-letter keys |
+| `funding_history()` | `GET /api/v1/market/funding/history` | `symbol`, `limit` |
+
+## Model mapping / judgment calls
+
+- Perps have no pools and nothing to swap, so this implements the separate
+  `MarketDataAdapter` interface rather than `VenueAdapter`, against new models
+  (`Market`, `OrderBook`, `BookLevel`, `Trade`, `Ticker`, `FundingRate`).
+- `Market` carries the constraints an order must satisfy: `tick_size` from
+  `price_filter`, `min_order_size`/`size_step`/`min_notional` from
+  `lot_size_filter`, `max_leverage` from `leverage_filter`.
+- Book rows are bare `[price, size]` pairs under `result.b` / `result.a`;
+  trade rows key on `i`/`s`/`S`/`v`/`p`/`seq`/`T`. `Trade.side` is the
+  aggressor's side.
+- All amounts are decimal strings parsed exactly; funding rates arrive with up
+  to 28 significant digits, so nothing may pass through a float.
+- Timestamps are epoch milliseconds, surfaced as timezone-aware UTC datetimes.
+- `OrderBook.mid_price` / `.spread` return `None` on a one-sided book, which is
+  a real state here (the CC book had zero offers on 2026-07-27 11:22 UTC after
+  a run of buys).
+
+## Venue quirks the adapter absorbs
+
+- **`depth` is an undeclared enum.** Only 10/50/200 are accepted; the OpenAPI
+  parameter carries no schema. The adapter rejects other values before the
+  request.
+- **Query-string rejections come back as plain text**, not the JSON error
+  envelope every other route uses, so the error mapper handles both.
+- **An empty book side is reported as `"0"`/`"0"` in the ticker's
+  `best_ask_price`/`best_ask_size`**, not as null. Passed through, a caller
+  reads a best ask of zero as a real price. `_top()` maps non-positive
+  price-or-size to `None`.
+- **The published `api-reference/openapi.json` does not parse** — trailing
+  comma after the staging server entry — so client generation from it fails at
+  step one.
+- `GET /api/v1/info` reports the Canton validator under a field named
+  `aptos_network`, left over from their migration off Aptos.

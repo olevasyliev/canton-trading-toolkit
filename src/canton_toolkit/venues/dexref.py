@@ -17,11 +17,27 @@ Venue-shape notes (vs Cantex):
   (``DemoAllocationAuthorizer``).
 - There is no venue-level transfer; ``transfer()`` always raises.
 - There is no network fee; ``max_network_fee`` is accepted and ignored.
+
+How a swap is submitted differs per deployment, so it is pluggable via
+``SwapRoute``:
+
+- ``AllocationSwapRoute`` — the documented path: the swapper authors an
+  allocation in their own wallet, then ``POST /v1/pools/swap`` settles it.
+- ``HostedPartySwapRoute`` — used by deployments that host the trader's party
+  themselves and therefore author the allocation server-side. Verified against
+  the hosted testnet on 2026-07-27; that endpoint family is deployment-side
+  only and absent from the reference repo, so treat it as unstable.
+
+Real-participant wire note: pool ``status`` arrives as the raw Daml variant
+constructor (``PS_Active``) rather than the ``Active`` the backend's own
+``types.ts`` declares and the in-memory demo emits. Both are accepted here.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from typing import Protocol
 
@@ -35,6 +51,7 @@ BASE_URL_ENV = "DEXREF_BASE_URL"
 TRADER_PARTY_ENV = "DEXREF_TRADER_PARTY"
 
 _TEN_DP = Decimal("1e-10")
+_ACTIVE_POOL_STATUSES = frozenset({"Active", "PS_Active"})
 
 
 def _fmt(amount: Decimal) -> str:
@@ -71,6 +88,98 @@ class DemoAllocationAuthorizer:
         return self._cid
 
 
+@dataclass(frozen=True)
+class SwapContext:
+    """Everything a swap route needs to submit one swap."""
+
+    request: Callable[..., Awaitable[object]]
+    trader: str
+    operator: str | None
+    pool: dict
+    sell_instrument: Instrument
+    sell_amount: Decimal
+    min_output: Decimal
+
+
+class SwapRoute(Protocol):
+    """How this deployment accepts a swap submission."""
+
+    async def submit(self, ctx: SwapContext) -> Decimal:
+        """Submit the swap and return the output amount actually received."""
+        ...
+
+
+class AllocationSwapRoute:
+    """The documented path: a wallet-authored allocation, settled by the pool.
+
+    ``POST /v1/pools/swap`` with the allocation contract id the swapper
+    authored, optionally preceded by ``POST /v1/pools/swap/request`` when the
+    authorizer needs the venue's allocation spec.
+    """
+
+    def __init__(self, authorizer: AllocationAuthorizer) -> None:
+        self._authorizer = authorizer
+
+    async def submit(self, ctx: SwapContext) -> Decimal:
+        spec: dict | None = None
+        if self._authorizer.needs_spec:
+            spec = await ctx.request(  # type: ignore[assignment]
+                "POST",
+                "/v1/pools/swap/request",
+                json={
+                    "poolCid": ctx.pool["contractId"],
+                    "swapper": ctx.trader,
+                    "inputInstrumentId": ctx.sell_instrument.id,
+                    "inputAmount": _fmt(ctx.sell_amount),
+                },
+            )
+        allocation_cid = await self._authorizer.authorize(spec)
+        raw = await ctx.request(
+            "POST",
+            "/v1/pools/swap",
+            json={
+                "poolCid": ctx.pool["contractId"],
+                "swapperAccount": {
+                    "owner": ctx.trader,
+                    "provider": ctx.operator,
+                    "id": ctx.trader,
+                },
+                "inputInstrumentId": ctx.sell_instrument.id,
+                "inputAmount": _fmt(ctx.sell_amount),
+                "minOutputAmount": _fmt(ctx.min_output),
+                "swapperAllocationCid": allocation_cid,
+            },
+        )
+        if not isinstance(raw, dict) or "amountOut" not in raw:
+            raise VenueRequestError(f"unexpected /v1/pools/swap response: {raw!r}")
+        return Decimal(str(raw["amountOut"]))
+
+
+class HostedPartySwapRoute:
+    """Swap as a party the deployment hosts, which authors the allocation itself.
+
+    ``POST /v1/testnet/swap`` takes the trader party directly and needs no
+    wallet step. Deployment-side only: this endpoint family does not exist in
+    the reference repo, so it can disappear without notice.
+    """
+
+    async def submit(self, ctx: SwapContext) -> Decimal:
+        raw = await ctx.request(
+            "POST",
+            "/v1/testnet/swap",
+            json={
+                "party": ctx.trader,
+                "poolCid": ctx.pool["contractId"],
+                "inputInstrumentId": ctx.sell_instrument.id,
+                "inputAmount": _fmt(ctx.sell_amount),
+                "minOutputAmount": _fmt(ctx.min_output),
+            },
+        )
+        if not isinstance(raw, dict) or "outputAmount" not in raw:
+            raise VenueRequestError(f"unexpected /v1/testnet/swap response: {raw!r}")
+        return Decimal(str(raw["outputAmount"]))
+
+
 class DexRefAdapter(VenueAdapter):
     """Venue adapter backed by the reference DEX operator-backend HTTP API."""
 
@@ -80,6 +189,7 @@ class DexRefAdapter(VenueAdapter):
         base_url: str | None = None,
         trader_party: str | None = None,
         allocation_authorizer: AllocationAuthorizer | None = None,
+        swap_route: SwapRoute | None = None,
         max_slippage: Decimal = Decimal("0.005"),
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -89,8 +199,12 @@ class DexRefAdapter(VenueAdapter):
             raise VenueAuthError(
                 f"trader party required: pass trader_party or set {TRADER_PARTY_ENV}"
             )
+        if swap_route is not None and allocation_authorizer is not None:
+            raise VenueRequestError("pass either swap_route or allocation_authorizer, not both")
         self._trader = trader
-        self._authorizer = allocation_authorizer
+        self._route: SwapRoute | None = swap_route
+        if allocation_authorizer is not None:
+            self._route = AllocationSwapRoute(allocation_authorizer)
         self._max_slippage = max_slippage
         self._client = client
         self._context: dict | None = None
@@ -155,7 +269,7 @@ class DexRefAdapter(VenueAdapter):
         for attempt in range(2):
             for p in self._raw_pools:
                 legs = {p["baseInstrumentId"], p["quoteInstrumentId"]}
-                if {sell.id, buy.id} == legs and p.get("status") == "Active":
+                if {sell.id, buy.id} == legs and p.get("status") in _ACTIVE_POOL_STATUSES:
                     return p
             if attempt == 0:
                 await self.pools()
@@ -222,50 +336,28 @@ class DexRefAdapter(VenueAdapter):
         *,
         max_network_fee: Decimal | None = None,  # no network fee on this venue
     ) -> SwapResult:
-        if self._authorizer is None:
+        if self._route is None:
             raise VenueRequestError(
-                "swap requires an allocation_authorizer (the swapper-side allocation "
-                "is wallet-authored on this venue); use DemoAllocationAuthorizer "
-                "against the demo backend"
+                "swap requires a swap_route (the swapper-side allocation is "
+                "wallet-authored on this venue); use AllocationSwapRoute with "
+                "DemoAllocationAuthorizer against the demo backend, or "
+                "HostedPartySwapRoute against a deployment that hosts your party"
             )
         pool = await self._resolve_pool(sell_instrument, buy_instrument)
         quote = await self.quote(sell_amount, sell_instrument, buy_instrument)
         min_output = quote.returned_amount * (Decimal(1) - self._max_slippage)
 
-        spec: dict | None = None
-        if self._authorizer.needs_spec:
-            spec = await self._request(  # type: ignore[assignment]
-                "POST",
-                "/v1/pools/swap/request",
-                json={
-                    "poolCid": pool["contractId"],
-                    "swapper": self._trader,
-                    "inputInstrumentId": sell_instrument.id,
-                    "inputAmount": _fmt(sell_amount),
-                },
+        out = await self._route.submit(
+            SwapContext(
+                request=self._request,
+                trader=self._trader,
+                operator=(self._context or {}).get("operator"),
+                pool=pool,
+                sell_instrument=sell_instrument,
+                sell_amount=sell_amount,
+                min_output=min_output,
             )
-        allocation_cid = await self._authorizer.authorize(spec)
-
-        operator = (self._context or {}).get("operator")
-        raw = await self._request(
-            "POST",
-            "/v1/pools/swap",
-            json={
-                "poolCid": pool["contractId"],
-                "swapperAccount": {
-                    "owner": self._trader,
-                    "provider": operator,
-                    "id": self._trader,
-                },
-                "inputInstrumentId": sell_instrument.id,
-                "inputAmount": _fmt(sell_amount),
-                "minOutputAmount": _fmt(min_output),
-                "swapperAllocationCid": allocation_cid,
-            },
         )
-        if not isinstance(raw, dict) or "amountOut" not in raw:
-            raise VenueRequestError(f"unexpected /v1/pools/swap response: {raw!r}")
-        out = Decimal(str(raw["amountOut"]))
         fee_fraction = Decimal(pool["feeBps"]) / Decimal(10000)
         return SwapResult(
             input_amount=sell_amount,

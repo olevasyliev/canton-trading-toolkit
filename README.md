@@ -1,74 +1,30 @@
-# Canton Trading Toolkit
+# canton_toolkit
 
-An open-source algorithmic-trading layer for the [Canton Network](https://www.canton.network/):
-one typed async Python interface to quote, trade, and run strategies on Canton venues,
-designed venue-agnostic from day one. Two adapters today: [Cantex](https://cantex.io/) and
-the [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation).
-
-## Why this exists
-
-Canton carries the largest tokenized-RWA value of any chain, but its open DeFi layer is
-young — venues are appearing faster than open tooling. Today anyone who wants to trade
-programmatically (a market-maker, a fund, an AI agent) has to hand-roll key handling,
-challenge-response auth, intent signing, and venue-specific plumbing. This toolkit builds
-that missing layer once, in the open.
-
-## What you can do today
-
-- **Read the market from Python** — list pools, price swap quotes, read account balances
-  through `pools()`, `quote()`, `balances()`. Good for monitoring, analytics, price feeds,
-  and strategy research.
-- **Execute programmatically** — `swap()` and `transfer()` through the same typed
-  interface. Ed25519 challenge-response auth and secp256k1 intent signing are handled
-  under the hood via the official venue SDK; your code never touches the crypto.
-- **Write venue-agnostic strategies** — code against the `VenueAdapter` interface, not a
-  specific exchange. A strategy written today runs on the next venue by swapping the
-  adapter, not the strategy.
-- **Develop offline** — the full test suite mocks the venue SDK at its boundary, so bot
-  development needs no keys and no network.
-
-## Who it's for
-
-- **Market-makers and bot operators** who want resting liquidity on Canton pools
-- **Funds and trading desks** that need programmatic access to Canton DeFi
-- **AI-agent builders** — a planned MCP execution interface will expose trading as typed
-  tools behind hard server-side risk caps (max position, max slippage, allow-listed pairs)
-
-## Live-validated
-
-**Cantex adapter** — verified against **mainnet** with real credentials:
-
-- 2026-07-14, read path: auth, pool listing, quoting:
-
-```
-base url: https://api.cantex.io
-auth OK
-pools: 9
-first pool pair: Amulet/USDCx
-quote: sell 1 Amulet -> 0.1321382958 USDCx (trade price 0.1321382958)
-```
-
-- 2026-07-17, write path: executed a real swap on the `CC-USDC` pool — sold 10.0 Amulet,
-  received 1.2981357151 USDCx (trade price 0.12963), confirmed on ledger.
-
-**Reference DEX adapter** — verified end to end on 2026-07-18 against the operator
-backend running in local demo mode: pools, holdings aggregation into balances, quotes
-with derived price/slippage/fee, and an executed demo swap that moved pool reserves.
-
-## Architecture
+An open-source algorithmic-trading toolkit for the [Canton Network](https://www.canton.network/).
 
 The core (`canton_toolkit.core`) is venue-agnostic: a small typed domain model
-(`Instrument`, `Pool`, `Balance`, `Quote`, `SwapResult`) and a `VenueAdapter`
-interface with a `VenueError` hierarchy. The first adapter,
-`CantexAdapter` (`canton_toolkit.venues.cantex`), wraps the official
-[`cantex_sdk`](https://github.com/caviarnine/cantex_sdk) async client. Auth,
-signing, and transport all live in the SDK; the adapter only translates its
-models and exceptions into the venue-agnostic core. The second adapter,
-`DexRefAdapter` (`canton_toolkit.venues.dexref`), speaks the reference DEX
-operator-backend HTTP API directly (no vendor SDK exists) and delegates the
-venue-specific wallet-authored allocation step to a pluggable
-`AllocationAuthorizer` strategy. Every integration point of both adapters is
-mapped to its exact upstream source location in [`SOURCES.md`](SOURCES.md).
+and two adapter interfaces, both with a shared `VenueError` hierarchy.
+
+- `VenueAdapter` — spot trading: `Instrument`, `Pool`, `Balance`, `Quote`,
+  `SwapResult`.
+- `MarketDataAdapter` — read-only market state for venues shaped as a symbol
+  and a book rather than a pool and a swap: `Market`, `OrderBook`, `Trade`,
+  `Ticker`, `FundingRate`.
+
+Three venues, three market structures, one client:
+
+| Adapter | Venue | Shape | Surface |
+|---|---|---|---|
+| `CantexAdapter` | [Cantex](https://cantex.io/) | spot AMM | read + swap, live on mainnet |
+| `DexRefAdapter` | [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation) | spot order book + RFQ | read + swap, live on its hosted testnet |
+| `EkidenAdapter` | [Ekiden](https://ekiden.fi/) | perpetual futures | market data only |
+
+`CantexAdapter` wraps the official
+[`cantex_sdk`](https://github.com/caviarnine/cantex_sdk) async client, so auth,
+signing and transport live in the SDK and the adapter only translates its models
+and exceptions. The other two venues ship no Python SDK and are called directly
+over HTTP. Every integration point is mapped to the source or the live response
+it came from in [`SOURCES.md`](SOURCES.md).
 
 ## Install
 
@@ -76,7 +32,7 @@ mapped to its exact upstream source location in [`SOURCES.md`](SOURCES.md).
 and pulled directly from GitHub:
 
 ```bash
-pip install "canton_toolkit @ git+https://github.com/olevasyliev/canton-trading-toolkit"
+pip install "canton_toolkit @ git+https://github.com/<owner>/canton_toolkit"
 # or, from a checkout:
 pip install -e ".[dev]"
 ```
@@ -97,7 +53,7 @@ are the SDK's own:
 ```python
 import asyncio
 from decimal import Decimal
-from canton_toolkit import CantexAdapter
+from canton_toolkit import CantexAdapter, Instrument
 
 async def main():
     async with CantexAdapter() as venue:  # reads keys from the environment
@@ -126,7 +82,16 @@ ruff check .
 authenticates (`connect()`), lists pools, and prices one small quote. It never
 calls `swap()` or `transfer()`.
 
-Copy `.env.example` to `.env` at the repo root and fill in the real keys, then:
+Create (or fill) a `.env` at the toolkit root with the real keys (same names as the [Environment variables](#environment-variables)
+table above):
+
+```
+CANTEX_OPERATOR_KEY=...
+CANTEX_TRADING_KEY=...
+CANTEX_BASE_URL=...
+```
+
+Then run:
 
 ```bash
 python scripts/live_smoke.py
@@ -136,18 +101,28 @@ The script never prints credential values, only step results and, on
 failure, whether it was an auth error or a request error (exit code 1
 either way).
 
-## Roadmap
+## Status
 
-1. **Venue connector** (this repo, live) — unified interface; Cantex adapter validated
-   on mainnet (read + write), reference-DEX adapter validated against the operator
-   backend in demo mode
-2. **Reference liquidity bots** — grid/DCA engines that keep measurable resting
-   depth on thin pools, with a DevNet dry-run mode
-3. **Same strategy, two venues** — one strategy config running unmodified on both
-   adapters against live networks
-4. **MCP agent-execution interface** — trading as typed tools for any MCP-capable
-   agent framework, behind enforced risk limits
+Live-validated on all three venues. Tests are fully offline and run against the
+real response shapes captured from each venue.
 
-## License
+- **Cantex** (mainnet, 2026-07-17) — challenge-response auth, pools, quoting,
+  and an executed swap with real funds: 10 CC sold for 1.2981357151 USDCx on
+  the `CC-USDC` market.
+- **Reference DEX** (hosted testnet, 2026-07-29) — swaps in both directions
+  through the adapter, with balance deltas and pool reserves reconciling
+  exactly. Two swap routes are supported: the documented wallet-authored
+  allocation path, and deployments that host the trader's party themselves.
+  `scripts/dexref_testnet_report.py` additionally exercises the venue's own
+  hosted routes end to end: multi-level two-sided quoting from one party, the
+  RFQ lifecycle with its best-execution receipt, and liquidity provision with
+  the LP token.
+- **Ekiden** (Canton testnet gateway, 2026-07-27) — markets, tickers, order
+  book, recent trades and funding history across all three of its perpetual
+  markets. Trading needs an Ed25519-signed session and is not implemented.
 
-[Apache-2.0](LICENSE)
+Run the live checks with `scripts/live_swap_smoke.py` (Cantex, dry-run by
+default), `scripts/dexref_testnet_smoke.py` and
+`scripts/dexref_testnet_report.py` (reference DEX, read-only unless given
+`--execute`) and `scripts/ekiden_market_smoke.py` (Ekiden, read-only by
+construction).

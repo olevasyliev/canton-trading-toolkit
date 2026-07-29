@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "canton_toolkit"
 version = "0.1.0"
-description = "Algorithmic-trading layer for the Canton Network: typed async venue connector, Cantex adapter first."
+description = "Open-source algorithmic-trading toolkit for the Canton Network (Cantex venue connector)."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -33,6 +33,3 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-
-[project.urls]
-Repository = "https://github.com/olevasyliev/canton-trading-toolkit"
