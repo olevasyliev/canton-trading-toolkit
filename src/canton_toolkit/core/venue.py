@@ -1,10 +1,17 @@
 """Venue-agnostic adapter interfaces and error hierarchy.
 
-A ``VenueAdapter`` exposes a small async read/write trading surface for a spot
-venue. A ``MarketDataAdapter`` exposes read-only market state for venues whose
-shape is a symbol and a book rather than a pool and a swap. Concrete adapters
-wrap a venue SDK and translate its exceptions into ``VenueError`` subclasses so
-callers never depend on venue-specific error types.
+Three interfaces, because Canton already has three venue shapes:
+
+- ``PoolDataAdapter`` — a constant-product AMM you can read and price against:
+  pools and quotes, no credentials.
+- ``VenueAdapter`` — a ``PoolDataAdapter`` you can also trade: balances,
+  swaps, transfers.
+- ``MarketDataAdapter`` — read-only market state for venues whose shape is a
+  symbol and a book rather than a pool and a swap.
+
+Concrete adapters wrap a venue SDK or HTTP API and translate its exceptions
+into ``VenueError`` subclasses so callers never depend on venue-specific error
+types.
 """
 
 from __future__ import annotations
@@ -38,10 +45,15 @@ class VenueRequestError(VenueError):
     """A request to the venue failed (bad request, timeout, transport error)."""
 
 
-class VenueAdapter(ABC):
-    """Async trading interface for a single venue."""
+class PoolDataAdapter(ABC):
+    """Read-only pools and pricing for a single AMM venue.
 
-    async def __aenter__(self) -> VenueAdapter:
+    Separate from ``VenueAdapter`` because a venue can be fully readable
+    without being tradable by us: Tradecraft publishes an open API but settles
+    orders through Daml choices that need our own validator node.
+    """
+
+    async def __aenter__(self) -> PoolDataAdapter:
         await self.connect()
         return self
 
@@ -50,7 +62,7 @@ class VenueAdapter(ABC):
 
     @abstractmethod
     async def connect(self) -> None:
-        """Establish an authenticated session with the venue."""
+        """Open the session and verify the venue is reachable."""
 
     @abstractmethod
     async def close(self) -> None:
@@ -68,6 +80,14 @@ class VenueAdapter(ABC):
         buy_instrument: Instrument,
     ) -> Quote:
         """Price a swap without executing it."""
+
+
+class VenueAdapter(PoolDataAdapter):
+    """Async trading interface for a single venue: an AMM we can also trade."""
+
+    async def __aenter__(self) -> VenueAdapter:
+        await self.connect()
+        return self
 
     @abstractmethod
     async def balances(self) -> list[Balance]:

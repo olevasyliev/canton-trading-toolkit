@@ -16,6 +16,7 @@ from .core.models import (
 )
 from .core.venue import (
     MarketDataAdapter,
+    PoolDataAdapter,
     VenueAdapter,
     VenueAuthError,
     VenueError,
@@ -28,6 +29,13 @@ from .venues.dexref import (
     DemoAllocationAuthorizer,
     DexRefAdapter,
     HostedPartySwapRoute,
+)
+from .venues.tradecraft import (
+    LiquidityQuote,
+    PoolState,
+    TradecraftAdapter,
+    swap_input,
+    swap_output,
 )
 
 __all__ = [
@@ -44,6 +52,7 @@ __all__ = [
     "Ticker",
     "Trade",
     "MarketDataAdapter",
+    "PoolDataAdapter",
     "VenueAdapter",
     "VenueError",
     "VenueAuthError",
@@ -54,4 +63,9 @@ __all__ = [
     "DemoAllocationAuthorizer",
     "AllocationSwapRoute",
     "HostedPartySwapRoute",
+    "TradecraftAdapter",
+    "PoolState",
+    "LiquidityQuote",
+    "swap_output",
+    "swap_input",
 ]

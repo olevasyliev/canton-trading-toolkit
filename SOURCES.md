@@ -178,3 +178,98 @@ here, so this adapter cannot place an order.
   step one.
 - `GET /api/v1/info` reports the Canton validator under a field named
   `aptos_network`, left over from their migration off Aptos.
+
+---
+
+# Tradecraft adapter (`venues/tradecraft.py`) — read-only spot AMM
+
+Constant-product AMM on Canton **mainnet**, run by Obsidian Systems
+(`tradecraft.validator.dev.canton.obsidian.systems` serves its devnet). No SDK
+exists; the public HTTP API is called directly. Shapes below were captured from
+live responses against `https://api.tradecraft.fi/v1` on **2026-08-11**, and
+cross-checked against the published OpenAPI fragments in the docs export
+(`docs.tradecraft.fi/llms-full.txt`) and the DAR integration guide v1.1.13.
+
+Reading and pricing need no credentials. Orders settle by exercising Daml
+choices on the venue's own package (`AMMRules_CreateSwapOrder` and friends),
+which needs a validator node, a party of ours, and the package itself, which
+the docs say is available on request. None of that is implemented, so this
+adapter implements the read-only `PoolDataAdapter` interface and cannot place
+an order.
+
+## Endpoints consumed
+
+| Adapter method | Endpoint | Notes |
+|---|---|---|
+| `connect()` | `GET /health` | asserts `status == "ok"` |
+| `pool_states()` | `GET /pools` | `{"pools": [...]}`; reserves, LP supply, both fee constants, 24h yield |
+| `pools()` | `GET /tokenA/{a}/{b}`, `GET /tokenB/{a}/{b}` | resolves symbols to Canton instruments, cached per symbol |
+| `inspect()` | `GET /inspect/{a}/{b}` | live reserves, `k`, `unclaimed_operator_fees`, `updated_at` |
+| `fees()` | `GET /feeAmount/{a}/{b}` | fractions here, percents on `/pools` |
+| `quote_symbols()` | `GET /quoteForFixedInput/{a}/{b}?givingAmount=` | the one route family that honours path order |
+| `quote_for_output()` | `GET /quoteForFixedOutput/{a}/{b}?gettingAmount=` | exact inverse of the above |
+| `liquidity_deposit_quote()` | `GET /quoteLPDeposit/{a}/{b}` | `instrument1Amount`, `instrument2Amount` |
+| `liquidity_withdrawal_quote()` | `GET /quoteLPWithdrawal/{a}/{b}` | `lpTokenAmount` |
+| `pool_yield()` / `pool_volume_usd()` | `GET /yield/{a}/{b}`, `GET /volume/{a}/{b}` | keyed by lookback (`1h`, `1d`, `7d`, `14d`, `30d`) |
+| `yield_history()` / `volume_history()` | `GET /yield_history`, `GET /volume_history` | `window`; **different vocabularies per route** |
+
+Not consumed: `GET /ammid` (the id is `lp_token_name`), `GET /lpToken`,
+`GET /ratio` (see below), `GET /disclosures` and `POST /vault-holdings` (write
+path only).
+
+## The fee model, measured
+
+The API publishes two constants per pool — an LP fee and an operator fee,
+0.2% + 0.1% on 15 of the 23 pools. The engine charges **half their sum on each
+leg**: the input is netted by `(lp + op) / 2`, and so is the output. Realized
+fee is therefore `1 - (1 - t/2)²`, slightly under the published `t`
+(0.299775% where 0.3% is advertised).
+
+This is a measurement, not a reading of their source: `swap_output()` is fitted
+to nothing and `scripts/tradecraft_market_smoke.py` prices **45 of 45
+directions across all 23 pools** and reproduces the venue's own quote to
+~1e-16 relative, which is float64's own precision. A single fee on one leg does
+not fit (it is off by ~2e-6 relative, well outside that).
+
+## Venue quirks the adapter absorbs
+
+- **Path order is honoured by the quote routes and silently ignored by
+  everything else.** `/quoteForFixedInput/USDCx/CC` sells USDCx, but
+  `/inspect`, `/ratio`, `/tokenA`, `/tokenB` and `/quoteLPDeposit` answer in
+  the pool's canonical order however the path is written — no error, no hint.
+  Sizing an LP deposit off the reversed path inverts the pair:
+  `/quoteLPDeposit/USDCx/CC?instrument1Amount=1000` returns
+  `instrument_1_to_deposit: 1000` meaning 1000 **CC**. The adapter orients
+  every response by the `token_a_id`/`token_b_id` the venue returns, and
+  `LiquidityQuote` is labelled by symbol rather than by position.
+- **Symbol is not instrument id, for exactly one token.** Canton Coin is `CC`
+  on every route and `Amulet` as an instrument — the same trap Cantex has.
+  `quote()` translates instruments to symbols; `_symbol_for()` refuses rather
+  than guesses.
+- **The same two fee constants ship in two units**: `/pools` gives
+  `lp_fee_percent: 0.2` (percent), `/feeAmount` gives `fee_amount: 0.002`
+  (fraction) under a schema that calls it a percentage. Fractions everywhere
+  here.
+- **`/ratio`'s description is the inverse of its own formula** — "the price of
+  token B expressed in token A (tokenB_holdings / tokenA_holdings)". The value
+  follows the formula. Combined with the orientation quirk, the route is not
+  worth calling: `PoolState.price(base, quote)` is computed from reserves.
+- **The two history routes take different windows.** `yield_history` accepts
+  hour/day/week/month/year, `volume_history` only hour/day/week, and the
+  published spec declares hour/day/week for both. Rejected client-side.
+- **Zero and negative amounts are quoted, not refused**: the venue answers
+  `200 {"user_gets": 0}`. Guarded before the request goes out.
+- **Amounts cross the wire as JSON numbers**, and eleven of the 69 numeric
+  pool fields are already large enough that a float64 cannot step at the
+  ledger's 1e-10 (worst: 18,273,526.46980026 HECTO, step 3.7e-9; `k` at
+  4.69e12, step ~1e-3). Responses are parsed with `parse_float=Decimal` so the
+  digits the venue sent are kept rather than round-tripped through a float a
+  second time.
+- **The published token enum is stale**: seven symbols declared, thirteen
+  traded, so a client generated from the spec cannot reach FRXUSD.B, HECTO,
+  TRKXRWA, USDM1, eXAG or eXAU. The adapter takes its token list from
+  `/pools`, never from the spec.
+- **An unknown path returns `text/plain`** while every documented error is the
+  JSON envelope, so the error mapper handles both.
+- `POST /vault-holdings`, required by step 5a of the venue's own DAR
+  integration guide, is absent from the published OpenAPI document.
