@@ -214,6 +214,9 @@ async def test_quote_happy_path():
         slippage=Decimal("0.0000015358"),
         fee_percentage=Decimal("0.0005000000"),
         estimated_time_seconds=Decimal("4.72"),
+        network_fee=Decimal("0.1000"),
+        network_fee_instrument=Instrument(admin="DSO::1220abc", id="Amulet"),
+        pool_price_before=Decimal("0.1548228128"),
     )
     # SDK is called with converted InstrumentId objects, not the core Instrument.
     args = client.get_swap_quote.await_args.args

@@ -83,6 +83,9 @@ def _to_quote(quote: SwapQuote) -> Quote:
         slippage=quote.prices.slippage,
         fee_percentage=quote.fees.fee_percentage,
         estimated_time_seconds=quote.estimated_time_seconds,
+        network_fee=quote.fees.network_fee.amount,
+        network_fee_instrument=_to_instrument(quote.fees.network_fee.instrument),
+        pool_price_before=quote.prices.pool_before,
     )
 
 

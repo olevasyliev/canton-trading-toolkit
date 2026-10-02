@@ -59,6 +59,12 @@ class Quote:
     slippage: Decimal
     fee_percentage: Decimal
     estimated_time_seconds: Decimal
+    # Venues that report these do; the rest leave them unset. Cantex charges a
+    # flat network fee per swap on top of the pool fee, always in Canton Coin,
+    # and it is NOT deducted from ``returned_amount``.
+    network_fee: Decimal | None = None
+    network_fee_instrument: Instrument | None = None
+    pool_price_before: Decimal | None = None
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canton Venue Board</title>
+<meta name="description" content="Cantex and Tradecraft priced side by side on Canton mainnet, every five minutes: where each trade size fills better.">
+<link rel="preconnect" href="https://api.fontshare.com">
+<link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=gambarino@400&display=swap">
+<style>
+:root {
+  --ground: #121410;
+  --ground-2: #181b16;
+  --ground-3: #20241d;
+  --ink: #ece6d6;
+  --ink-2: #b9b3a3;
+  --ink-3: #807b6e;
+  --cantex: #e3907a;
+  --cantex-wash: rgba(227, 144, 122, 0.13);
+  --trade: #9fc6ad;
+  --trade-wash: rgba(159, 198, 173, 0.13);
+  --rule: rgba(236, 230, 214, 0.09);
+  --display: "Gambarino", "Iowan Old Style", Georgia, serif;
+  --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --num: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--ground); }
+body {
+  margin: 0;
+  color: var(--ink);
+  font: 15px/1.5 var(--body);
+  background: var(--ground);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+a { color: inherit; text-decoration-color: var(--ink-3); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--ink); }
+.num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+
+/* top line */
+.top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  padding: 26px 0 0;
+}
+.mark { font-family: var(--display); font-size: 22px; letter-spacing: 0.01em; }
+.mark span { color: var(--ink-3); }
+.live { font-size: 13px; color: var(--ink-2); display: flex; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
+.live b { font-weight: 500; color: var(--ink); }
+.live .stale { color: var(--cantex); }
+
+/* the verdict */
+.verdict {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(30px, 4.6vw, 54px);
+  line-height: 1.12;
+  letter-spacing: -0.005em;
+  margin: 64px 0 0;
+  max-width: 30ch;
+  text-wrap: balance;
+}
+.verdict .cx { color: var(--cantex); }
+.verdict .tc { color: var(--trade); }
+.verdict .dim { color: var(--ink-3); }
+.sub { margin: 18px 0 0; color: var(--ink-2); max-width: 62ch; }
+
+/* switches */
+.controls { margin-top: 44px; display: grid; gap: 14px; }
+.pairs {
+  display: flex; gap: 4px 22px; flex-wrap: wrap;
+  font-size: 14px;
+}
+.pairs button, .sides button {
+  all: unset; cursor: pointer; color: var(--ink-3);
+  padding: 4px 0; transition: color .15s;
+}
+.pairs button:hover, .sides button:hover { color: var(--ink-2); }
+.pairs button[aria-pressed="true"], .sides button[aria-pressed="true"] { color: var(--ink); font-weight: 600; }
+.pairs button:focus-visible, .sides button:focus-visible { outline: 1px solid var(--ink-3); outline-offset: 3px; border-radius: 2px; }
+.sides { display: flex; gap: 22px; font-size: 14px; }
+
+/* chart */
+.stage {
+  margin-top: 22px;
+  background: linear-gradient(180deg, var(--ground-2), rgba(24, 27, 22, 0.55));
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(236, 230, 214, 0.05);
+  padding: 22px 22px 8px;
+}
+.stage svg { display: block; overflow: visible; }
+.axis text { fill: var(--ink-3); font: 12px var(--num); }
+.axis line { stroke: var(--rule); }
+.curve { fill: none; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.dot { stroke: var(--ground-2); stroke-width: 3; }
+.endlabel { font: 600 13px var(--body); }
+.cross line { stroke: var(--ink-3); stroke-dasharray: 2 5; stroke-linecap: round; }
+.cross text { fill: var(--ink-2); font: 12px var(--num); }
+.ylab { fill: var(--ink-3); font: 12px var(--body); }
+
+/* table */
+.fills { margin-top: 34px; width: 100%; border-collapse: collapse; font-size: 14px; }
+.fills th { text-align: right; font-weight: 500; color: var(--ink-3); padding: 0 0 10px; font-size: 13px; }
+.fills th:first-child, .fills td:first-child { text-align: left; }
+.fills td { text-align: right; padding: 11px 0; border-top: 1px solid var(--rule); }
+.fills td.win-cx { color: var(--cantex); }
+.fills td.win-tc { color: var(--trade); }
+.fills .size { font-family: var(--display); font-size: 19px; }
+.fills .sold { color: var(--ink-3); font-size: 12.5px; display: block; }
+
+/* the two lower blocks */
+.lower { display: grid; grid-template-columns: 1.15fr 1fr; gap: 56px; margin-top: 96px; }
+.lower h2 { font-family: var(--display); font-weight: 400; font-size: 27px; margin: 0; line-height: 1.2; }
+.lower p { color: var(--ink-2); margin: 10px 0 0; max-width: 52ch; }
+.big { font-family: var(--display); font-size: clamp(44px, 6vw, 72px); line-height: 1; margin: 26px 0 6px; letter-spacing: 0.01em; }
+.big small { font-family: var(--body); font-size: 15px; color: var(--ink-3); letter-spacing: 0; margin-left: 10px; }
+.split { display: flex; height: 8px; border-radius: 99px; overflow: hidden; margin: 18px 0 6px; background: var(--ground-3); }
+.split i { display: block; height: 100%; }
+.splitkey { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); }
+.log { list-style: none; padding: 0; margin: 26px 0 0; font-size: 13.5px; }
+.log li { display: grid; grid-template-columns: 4.2em 5.4em 1fr auto; gap: 12px; padding: 8px 0; border-top: 1px solid var(--rule); color: var(--ink-2); }
+.log li .v-cantex { color: var(--cantex); }
+.log li .v-tradecraft { color: var(--trade); }
+.empty { color: var(--ink-3); font-size: 14px; margin-top: 22px; }
+
+/* method + foot */
+.method { margin-top: 110px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 56px; font-size: 14px; color: var(--ink-2); }
+.method p { margin: 0; }
+.method strong { color: var(--ink); font-weight: 600; }
+.foot {
+  margin-top: 90px; padding: 26px 0 40px; border-top: 1px solid var(--rule);
+  display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--ink-3);
+}
+.foot .mark { font-size: 17px; color: var(--ink-2); }
+
+@media (max-width: 760px) {
+  .wrap { padding: 0 16px; }
+  .top { flex-direction: column; gap: 6px; }
+  .live { justify-content: flex-start; }
+  .verdict { margin-top: 40px; }
+  .stage { padding: 14px 10px 4px; border-radius: 14px; }
+  .lower, .method { grid-template-columns: 1fr; gap: 64px; }
+  .method { gap: 18px; }
+  .fills .hide-sm { display: none; }
+  .log li { grid-template-columns: 3.8em 4.8em 1fr; }
+  .log li :last-child { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="mark">Canton venue board <span>· mainnet</span></div>
+    <div class="live" id="live">Loading the latest prices</div>
+  </header>
+
+  <main>
+    <h1 class="verdict" id="verdict">Pricing both venues…</h1>
+    <p class="sub" id="sub">Cantex and Tradecraft, quoted at four trade sizes every five minutes. Each figure is what you would actually receive, after every fee the venue publishes.</p>
+
+    <section class="controls" aria-label="Pair and direction">
+      <div class="pairs" id="pairs" role="group" aria-label="Pair"></div>
+      <div class="sides" id="sides" role="group" aria-label="Direction"></div>
+    </section>
+
+    <div class="stage" id="stage"></div>
+
+    <table class="fills" id="fills"></table>
+
+    <section class="lower">
+      <div>
+        <h2>The paper router</h2>
+        <p>Every five minutes it places a $1,000 CC/USDCx order, alternating buy and sell, and fills it wherever it returns more. It runs on live quotes and executes nothing.</p>
+        <div id="router"></div>
+      </div>
+      <div>
+        <h2>Cross-venue spread scan</h2>
+        <p>Buy a token on one venue and sell it on the other at every size and pair. A route is listed only when it comes back at least $0.50 ahead after fees.</p>
+        <div id="scan"></div>
+      </div>
+    </section>
+
+    <section class="method" aria-label="Method">
+      <p><strong>Same tokens, matched on the ledger.</strong> Pairs are paired by Canton instrument (issuer party and id), not by ticker. Only pairs that trade on both venues appear.</p>
+      <p><strong>Tradecraft</strong> is priced from its public pool reserves with the venue's own formula, which reproduces its quote API to the digit. It publishes no network fee, so none is taken off.</p>
+      <p><strong>Cantex</strong> is priced by its own quote API. Its flat network fee (about 1.24 CC a swap) is taken off the output, which is why the smallest trades lose a little there.</p>
+      <p><strong>Sizes in dollars</strong> are converted at the Tradecraft CC/USDCx mid. The cost on the chart is measured against the average of the two venues' mid prices.</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="mark">Canton venue board</div>
+    <div>Built on <a href="https://github.com/olevasyliev/canton-trading-toolkit">canton_toolkit</a>, open source. Read-only: nothing on this page is signed or executed.</div>
+  </footer>
+</div>
+
+<script>
+const DATA = "data/";
+const SIDES = { sell: "sell CC", buy: "buy CC" };
+const state = { board: null, paper: null, scan: null, pair: "USDCx", side: "sell" };
+try { const s = JSON.parse(localStorage.getItem("board-view") || "{}"); Object.assign(state, s.pair ? { pair: s.pair } : {}, s.side ? { side: s.side } : {}); } catch (e) {}
+
+const $ = (id) => document.getElementById(id);
+const usd = (v) => v >= 1000 ? "$" + (v / 1000).toLocaleString("en-US", { maximumFractionDigits: 1 }) + "K" : "$" + Math.round(v).toLocaleString("en-US");
+const amt = (v) => {
+  if (v == null) return "–";
+  const a = Math.abs(v);
+  const d = a >= 1000 ? 0 : a >= 10 ? 2 : a >= 0.01 ? 4 : 8;
+  return v.toLocaleString("en-US", { minimumFractionDigits: Math.min(d, 2), maximumFractionDigits: d });
+};
+const pct = (bps) => (bps > 0 ? "+" : "") + (bps / 100).toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 }) + "%";
+const ago = (t) => {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
+};
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function getJSON(name) {
+  const r = await fetch(DATA + name + "?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error(name + " " + r.status);
+  return r.json();
+}
+
+async function load() {
+  try {
+    const [board, paper, scan] = await Promise.all([getJSON("board.json"), getJSON("paper.json"), getJSON("scan.json")]);
+    Object.assign(state, { board, paper, scan });
+    if (!board.pairs.some((p) => p.token === state.pair)) state.pair = (board.pairs[0] || {}).token;
+    render();
+  } catch (e) {
+    $("live").textContent = "Prices are unavailable right now";
+  }
+}
+
+function currentPair() { return state.board.pairs.find((p) => p.token === state.pair); }
+function rowsFor(pair) { return pair.rows.filter((r) => r.side === SIDES[state.side]); }
+
+function costBps(pair, row, venue) {
+  const out = row[venue];
+  if (out == null) return null;
+  const mids = [pair.mid_tradecraft, pair.mid_cantex].filter((m) => m);
+  const mid = mids.reduce((a, b) => a + b, 0) / mids.length;
+  const ideal = state.side === "sell" ? row.sold * mid : row.sold / mid;
+  return (1 - out / ideal) * 10000;
+}
+
+// Where does the better venue flip? Edges are interpolated on a log size axis.
+function crossings(rows) {
+  const out = [];
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const a = rows[i].cantex_edge_bps, b = rows[i + 1].cantex_edge_bps;
+    if (a == null || b == null || a === 0 || Math.sign(a) === Math.sign(b)) continue;
+    const la = Math.log(rows[i].size_usd), lb = Math.log(rows[i + 1].size_usd);
+    out.push({ size: Math.exp(la + (lb - la) * (a / (a - b))), from: a > 0 ? "cantex" : "tradecraft" });
+  }
+  return out;
+}
+
+function roundSize(v) {
+  const p = Math.pow(10, Math.floor(Math.log10(v)) - 1);
+  return Math.round(v / p) * p;
+}
+
+function verdict(pair, rows) {
+  const flow = state.side === "sell" ? `Selling CC for ${esc(pair.token)}` : `Buying CC with ${esc(pair.token)}`;
+  const known = rows.filter((r) => r.cantex_edge_bps != null);
+  if (!known.length) return `${flow}: <span class="dim">Cantex did not quote this tick.</span>`;
+  const cx = '<span class="cx">Cantex</span>', tc = '<span class="tc">Tradecraft</span>';
+  const xs = crossings(known);
+  if (!xs.length) {
+    const who = known[0].cantex_edge_bps > 0 ? cx : tc;
+    return `${flow}, ${who} fills better at every size from $100 to $50K.`;
+  }
+  if (xs.length === 1) {
+    const [first, then] = xs[0].from === "cantex" ? [cx, tc] : [tc, cx];
+    return `${flow}, ${first} fills better up to ${usd(roundSize(xs[0].size))}. Past that, ${then}.`;
+  }
+  return `${flow}, the better venue changes ${xs.length} times between $100 and $50K.`;
+}
+
+function renderControls() {
+  $("pairs").innerHTML = state.board.pairs.map((p) =>
+    `<button type="button" data-pair="${esc(p.token)}" aria-pressed="${p.token === state.pair}">CC/${esc(p.token)}</button>`).join("");
+  $("sides").innerHTML = [["sell", "Selling CC"], ["buy", "Buying CC"]].map(([k, l]) =>
+    `<button type="button" data-side="${k}" aria-pressed="${k === state.side}">${l}</button>`).join("");
+}
+
+function renderChart(pair, rows) {
+  const W = Math.max(300, $("stage").clientWidth - 2 * parseFloat(getComputedStyle($("stage")).paddingLeft || 0));
+  const narrow = W < 560;
+  const H = narrow ? 260 : 340, L = narrow ? 44 : 64, R = narrow ? 82 : 104, T = 18, B = 40;
+  const pts = { cantex: [], tradecraft: [] };
+  rows.forEach((r) => {
+    for (const v of ["cantex", "tradecraft"]) {
+      const c = costBps(pair, r, v);
+      if (c != null && isFinite(c)) pts[v].push({ s: r.size_usd, c });
+    }
+  });
+  const all = [...pts.cantex, ...pts.tradecraft].map((p) => p.c);
+  if (!all.length) { $("stage").innerHTML = '<p class="empty">No quotes for this pair this tick.</p>'; return; }
+  let lo = Math.min(0, ...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.08 || 10; lo -= pad; hi += pad;
+  const sMin = Math.log(rows[0].size_usd), sMax = Math.log(rows[rows.length - 1].size_usd);
+  const x = (s) => L + (Math.log(s) - sMin) / (sMax - sMin) * (W - L - R);
+  const y = (c) => T + (c - lo) / (hi - lo) * (H - T - B);   // cost grows downward
+  const step = niceStep((hi - lo) / 5);
+  let g = '<g class="axis">';
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 12}" y="${y(v)}" text-anchor="end" dominant-baseline="central">${(v / 100).toFixed(step >= 100 ? 0 : 1)}%</text>`;
+  }
+  rows.forEach((r) => { g += `<text x="${x(r.size_usd)}" y="${H - 12}" text-anchor="middle">${usd(r.size_usd)}</text>`; });
+  g += "</g>";
+  g += `<text class="ylab" x="${L}" y="${T - 4}" dy="-6">${narrow ? "cost, fees and impact included" : "cost of the trade, fees and price impact included"}</text>`;
+
+  // tint the gap between the curves in the colour of whichever venue is ahead there
+  let wash = "";
+  const both = rows.map((r) => ({ s: r.size_usd, cx: costBps(pair, r, "cantex"), tc: costBps(pair, r, "tradecraft") }))
+    .filter((p) => p.cx != null && p.tc != null);
+  for (let i = 0; i + 1 < both.length; i++) {
+    const a = both[i], b = both[i + 1];
+    const da = a.tc - a.cx, db = b.tc - b.cx;
+    const seg = (p, q, color) => `<polygon fill="${color}" points="${x(p.s)},${y(p.cx)} ${x(q.s)},${y(q.cx)} ${x(q.s)},${y(q.tc)} ${x(p.s)},${y(p.tc)}"/>`;
+    if (Math.sign(da) === Math.sign(db) || da === 0 || db === 0) {
+      wash += seg(a, b, (da + db) > 0 ? "var(--cantex-wash)" : "var(--trade-wash)");
+    } else {
+      const f = da / (da - db);
+      const ls = Math.exp(Math.log(a.s) + (Math.log(b.s) - Math.log(a.s)) * f);
+      const m = { s: ls, cx: a.cx + (b.cx - a.cx) * f, tc: a.cx + (b.cx - a.cx) * f };
+      wash += seg(a, m, da > 0 ? "var(--cantex-wash)" : "var(--trade-wash)") + seg(m, b, db > 0 ? "var(--cantex-wash)" : "var(--trade-wash)");
+    }
+  }
+
+  let lines = "";
+  for (const [v, col, name] of [["tradecraft", "var(--trade)", "Tradecraft"], ["cantex", "var(--cantex)", "Cantex"]]) {
+    const p = pts[v];
+    if (!p.length) continue;
+    lines += `<polyline class="curve" stroke="${col}" points="${p.map((q) => x(q.s) + "," + y(q.c)).join(" ")}"/>`;
+    lines += p.map((q) => `<circle class="dot" cx="${x(q.s)}" cy="${y(q.c)}" r="5" fill="${col}"><title>${name}, ${usd(q.s)}: ${(q.c / 100).toFixed(2)}%</title></circle>`).join("");
+  }
+  // end labels, nudged apart if they collide
+  const ends = ["cantex", "tradecraft"].filter((v) => pts[v].length).map((v) => ({ v, yy: y(pts[v][pts[v].length - 1].c) }));
+  if (ends.length === 2 && Math.abs(ends[0].yy - ends[1].yy) < 18) {
+    const mid = (ends[0].yy + ends[1].yy) / 2, up = ends[0].yy <= ends[1].yy ? 0 : 1;
+    ends[up].yy = mid - 9; ends[1 - up].yy = mid + 9;
+  }
+  ends.forEach((e) => {
+    lines += `<text class="endlabel" x="${W - R + 14}" y="${e.yy}" dominant-baseline="central" fill="var(--${e.v === "cantex" ? "cantex" : "trade"})">${e.v === "cantex" ? "Cantex" : "Tradecraft"}</text>`;
+  });
+
+  let cross = "";
+  crossings(rows.filter((r) => r.cantex_edge_bps != null)).forEach((c) => {
+    const cx = x(c.size);
+    cross += `<g class="cross"><line x1="${cx}" x2="${cx}" y1="${T}" y2="${H - B}"/><text x="${cx + 8}" y="${T + 14}">${usd(roundSize(c.size))}</text></g>`;
+  });
+
+  $("stage").innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost by trade size on each venue">${g}${wash}${cross}${lines}</svg>`;
+}
+
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / p;
+  return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p;
+}
+
+function renderTable(pair, rows) {
+  const unitIn = state.side === "sell" ? "CC" : pair.token;
+  const unitOut = state.side === "sell" ? pair.token : "CC";
+  const head = `<thead><tr><th>Trade</th><th>Cantex gives</th><th>Tradecraft gives</th><th class="hide-sm">Difference</th></tr></thead>`;
+  const body = rows.map((r) => {
+    const e = r.cantex_edge_bps;
+    const cxWin = e != null && e > 0, tcWin = e != null && e < 0;
+    return `<tr>
+      <td><span class="size">${usd(r.size_usd)}</span><span class="sold num">${amt(r.sold)} ${esc(unitIn)}</span></td>
+      <td class="num ${cxWin ? "win-cx" : ""}">${amt(r.cantex)} ${esc(unitOut)}</td>
+      <td class="num ${tcWin ? "win-tc" : ""}">${amt(r.tradecraft)} ${esc(unitOut)}</td>
+      <td class="num hide-sm ${cxWin ? "win-cx" : tcWin ? "win-tc" : ""}">${e == null ? "–" : (cxWin ? "Cantex " : "Tradecraft ") + pct(Math.abs(e))}</td>
+    </tr>`;
+  }).join("");
+  $("fills").innerHTML = head + "<tbody>" + body + "</tbody>";
+}
+
+function renderRouter() {
+  const p = state.paper || {};
+  const t = p.totals;
+  if (!t || !t.fills) { $("router").innerHTML = '<p class="empty">The first order goes in on the next tick.</p>'; return; }
+  const cx = t.by_venue.cantex || 0, tc = t.by_venue.tradecraft || 0, n = cx + tc;
+  const fills = (p.fills || []).slice(-8).reverse();
+  $("router").innerHTML = `
+    <div class="big num">+$${t.extra_usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}<small>over ${t.fills.toLocaleString("en-US")} ${t.fills === 1 ? "order" : "orders"}, ${usd(t.notional_usd)} routed</small></div>
+    <p>Kept by routing each order to the better venue, against sending it to the other one.</p>
+    <div class="split" aria-hidden="true"><i style="width:${cx / n * 100}%;background:var(--cantex)"></i><i style="width:${tc / n * 100}%;background:var(--trade)"></i></div>
+    <div class="splitkey"><span>Cantex ${cx}</span><span>Tradecraft ${tc}</span></div>
+    <ul class="log">${fills.map((f) => `<li><span class="num">${new Date(f.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><span>${esc(f.side)}</span><span class="v-${f.venue}">${f.venue === "cantex" ? "Cantex" : "Tradecraft"}</span><span class="num">+${pct(f.edge_bps).replace("+", "")}</span></li>`).join("")}</ul>`;
+}
+
+function renderScan() {
+  const s = state.scan || {};
+  const routes = (s.routes || []).slice(-8).reverse();
+  const head = `<div class="big num">${(s.routes || []).length}<small>routes cleared, ${(s.checked || 0).toLocaleString("en-US")} checked</small></div>`;
+  if (!routes.length) {
+    $("scan").innerHTML = head + '<p class="empty">Nothing has cleared $0.50 yet. Sampled every five minutes, the two venues stay within their fees of each other.</p>';
+    return;
+  }
+  const cc = state.board.cc_usd;
+  $("scan").innerHTML = head + `<ul class="log">${routes.map((r) => `<li><span class="num">${new Date(r.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><span>${esc(r.pair)}</span><span>${usd(r.size_usd)}, buy on ${r.buy_on === "cantex" ? "Cantex" : "Tradecraft"}</span><span class="num">+$${(r.net_cc * cc).toFixed(2)}</span></li>`).join("")}</ul>`;
+}
+
+function renderLive() {
+  const b = state.board;
+  const age = Date.now() / 1000 - b.t;
+  const stale = age > 900 || b.status === "error";
+  $("live").innerHTML = `<span>CC <b class="num">$${b.cc_usd.toFixed(4)}</b></span><span>${b.pairs.length} pairs on both venues</span>` +
+    `<span class="${stale ? "stale" : ""}">${stale ? "Last good prices " : "Updated "}${ago(b.t)}</span>`;
+}
+
+function render() {
+  if (!state.board || !state.board.pairs) return;
+  const pair = currentPair();
+  if (!pair) return;
+  const rows = rowsFor(pair);
+  renderLive();
+  renderControls();
+  $("verdict").innerHTML = verdict(pair, rows);
+  renderChart(pair, rows);
+  renderTable(pair, rows);
+  renderRouter();
+  renderScan();
+  try { localStorage.setItem("board-view", JSON.stringify({ pair: state.pair, side: state.side })); } catch (e) {}
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-pair], button[data-side]");
+  if (!b) return;
+  if (b.dataset.pair) state.pair = b.dataset.pair;
+  if (b.dataset.side) state.side = b.dataset.side;
+  render();
+});
+
+load();
+setInterval(load, 60000);
+setInterval(() => state.board && renderLive(), 15000);
+let resizeTimer;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
+</script>
+</body>
+</html>
