@@ -26,6 +26,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import alerts as al
+import digest
 import httpx
 import model as m
 from model import CC, VenuePool
@@ -274,6 +275,7 @@ class Collector:
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
         write_json(self.api / "history.json", self.history)
         await self._alerts(tokens, premium, scan, now)
+        await self._daily(summary, tokens, premium)
         self.tick_no += 1
         log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no,
                  len(tokens), sum(len(v) > 1 for v in books.values()),
@@ -299,11 +301,28 @@ class Collector:
             return
         new = al.fire(state, current, now)
         write_json(path, state)
-        token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
-        if not (new and token and chat):
+        if not new:
             return
         body = "\n\n".join(f"{al.EMOJI.get(a.kind, '•')} {a.html}" for a in new[:10])
-        body += '\n\n📈 <a href="https://cantonvenues.com">cantonvenues.com</a>'
+        body += '\n\n🔗 <a href="https://cantonvenues.com">cantonvenues.com</a>'
+        await self._telegram(body)
+
+    async def _daily(self, summary, tokens, premium) -> None:
+        path = self.api / "daily.json"
+        state = load_json(path, {"notes": []})
+        now = digest.today()
+        if not digest.due(state, now):
+            return
+        html = digest.compose(summary, tokens, premium, self.desk, now)
+        state["daily_date"] = now.date().isoformat()
+        state["notes"] = (state["notes"] + [{"t": int(now.timestamp()), "html": html}])[-30:]
+        write_json(path, state)  # recorded before sending: a failed send is not retried into a duplicate
+        await self._telegram(html)
+
+    async def _telegram(self, body: str) -> None:
+        token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
+        if not (token and chat):
+            return
         try:
             # the URL carries the bot token: never log it (httpx is at WARNING)
             resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={

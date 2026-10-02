@@ -22,7 +22,7 @@ ssh "$SERVER" "
   test -d .venv || python3 -m venv .venv
   .venv/bin/pip install -q --upgrade ./releases/$SHA
   ln -sfn releases/$SHA current
-  install -m 644 current/examples/canton_venues/site/index.html /var/www/canton-venues/index.html
+  install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png /var/www/canton-venues/
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service /etc/systemd/system/canton-venues.service
   # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
   if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then

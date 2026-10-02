@@ -17,6 +17,8 @@
     document.documentElement.setAttribute("data-theme", t);
   })();
 </script>
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon-180.png">
 <script src="https://cdn.jsdelivr.net/npm/d3-hierarchy@3.1.2/dist/d3-hierarchy.min.js"></script>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="da1b8603-0104-4e1f-8368-dbd9adbeafcb"></script>
 <style>
@@ -205,6 +207,23 @@ pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; co
 .foot p { margin: 0 0 6px; }
 .stale { color: var(--down) !important; font-weight: 600; }
 
+/* token view */
+body.tv main > :not(#tokenview):not(.foot) { display: none; }
+body:not(.tv) #tokenview { display: none; }
+.tvback { display: inline-block; margin: 20px 0 8px; font-weight: 600; font-size: 13px; }
+.tvhead { display: flex; align-items: center; gap: 12px; margin: 6px 0 4px; }
+.tvhead h1 { font-size: 28px; margin: 0; letter-spacing: -0.01em; }
+.tvhead .vchip { font-size: 12px; }
+.tvprice { display: flex; align-items: baseline; gap: 12px; margin: 6px 0 18px; }
+.tvprice .big { font-size: 34px; font-weight: 700; letter-spacing: -0.01em; }
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--card); }
+.stat .k { color: var(--text-2); font-size: 12px; font-weight: 500; }
+.stat .v { font-size: 16px; font-weight: 700; margin-top: 4px; }
+.tchart { position: relative; }
+.tchart svg { display: block; width: 100%; }
+.tchart .tip { position: absolute; top: 6px; right: 8px; font-size: 12px; color: var(--text-2); background: var(--bg-2); border-radius: 6px; padding: 3px 8px; pointer-events: none; }
+.tchart text { fill: var(--text-2); font: 11px Inter, system-ui, sans-serif; }
 @media (max-width: 1100px) {
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid2 { grid-template-columns: 1fr; }
@@ -222,6 +241,7 @@ pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; co
   .apigrid div { grid-template-columns: 1fr; gap: 2px; }
   .foot { grid-template-columns: 1fr; }
   .prow { grid-template-columns: 8.5em 1fr 4.6em; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
 </head>
@@ -242,6 +262,7 @@ pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; co
 </header>
 
 <main class="wrap">
+  <section id="tokenview" aria-live="polite"></section>
   <div class="title">
     <h1>Canton DEX prices today</h1>
     <p id="headline">Every token on Canton's decentralised exchanges, priced live from the pools.</p>
@@ -508,6 +529,91 @@ function renderAlerts() {
     : '<tbody><tr><td class="l empty">No alert has fired since the feed started. Conditions already true when it started are not announced.</td></tr></tbody>';
 }
 
+/* ---------- token page ---------- */
+let histLoading = null;
+function loadHistory() {
+  if (D.history || histLoading) return histLoading;
+  histLoading = get("history").then((h) => { D.history = h; if (location.hash.startsWith("#t/")) renderToken(); }).catch(() => {});
+  return histLoading;
+}
+function lineChart(id, pts, fmt, opts = {}) {
+  // pts: [[ms, value], ...]
+  const el = $(id); if (!el) return;
+  if (!pts || pts.length < 2) { el.innerHTML = `<p class="empty">${opts.empty || "Not enough history yet."}</p>`; return; }
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const R = 16 + 7 * Math.max(...[Math.min(...ys), Math.max(...ys)].map((v) => fmt(v).length));
+  const W = Math.max(280, el.clientWidth), H = opts.h || 240, L = 8, T = 12, B = 24;
+  let lo = Math.min(...ys, opts.zero ? 0 : Infinity), hi = Math.max(...ys, opts.zero ? 0 : -Infinity);
+  if (hi === lo) { hi += Math.abs(hi) * 0.01 || 1; lo -= Math.abs(lo) * 0.01 || 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x = (t) => L + (t - xs[0]) / (xs[xs.length - 1] - xs[0] || 1) * (W - L - R), y = (v) => T + (hi - v) / (hi - lo) * (H - T - B);
+  const up = ys[ys.length - 1] >= ys[0], col = opts.color || (up ? "var(--up)" : "var(--down)");
+  const gaps = xs.slice(1).map((t, i) => t - xs[i]).sort((a, b) => a - b), med = gaps[gaps.length >> 1] || 1;
+  const path = pts.map((p, i) => `${i && p[0] - pts[i - 1][0] <= 3 * med ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
+  let g = "";
+  for (let i = 0; i <= 3; i++) { const v = lo + (hi - lo) * (i + 0.5) / 4; g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${W - R + 8}" y="${y(v)}" dominant-baseline="central">${fmt(v)}</text>`; }
+  if (opts.zero) g += `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--text-3)" stroke-dasharray="3 4"/>`;
+  const span = xs[xs.length - 1] - xs[0], days = span > 2 * 86400000;
+  for (let i = 0; i <= 4; i++) { const t = xs[0] + span * i / 4; g += `<text x="${x(t)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === 4 ? "end" : "middle"}">${new Date(t).toLocaleString([], days ? { day: "numeric", month: "short" } : { hour: "2-digit", minute: "2-digit" })}</text>`; }
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img">${g}<path d="${path}L${x(xs[xs.length - 1])},${H - B}L${x(xs[0])},${H - B}Z" fill="${col}" opacity=".08"/><path d="${path}" fill="none" stroke="${col}" stroke-width="2"/><line class="cur" stroke="var(--text-3)" y1="${T}" y2="${H - B}" style="display:none"/><circle class="curd" r="4" fill="${col}" style="display:none"/></svg><div class="tip" style="display:none"></div>`;
+  const svg = el.querySelector("svg"), tip = el.querySelector(".tip"), cur = el.querySelector(".cur"), dot = el.querySelector(".curd");
+  svg.addEventListener("mousemove", (e) => {
+    const r = svg.getBoundingClientRect(), mx = (e.clientX - r.left) * W / r.width;
+    let best = 0; pts.forEach((p, i) => { if (Math.abs(x(p[0]) - mx) < Math.abs(x(pts[best][0]) - mx)) best = i; });
+    const p = pts[best]; cur.setAttribute("x1", x(p[0])); cur.setAttribute("x2", x(p[0])); cur.style.display = ""; dot.setAttribute("cx", x(p[0])); dot.setAttribute("cy", y(p[1])); dot.style.display = "";
+    tip.style.display = ""; tip.textContent = `${new Date(p[0]).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ${fmt(p[1])}`;
+  });
+  svg.addEventListener("mouseleave", () => { tip.style.display = "none"; cur.style.display = "none"; dot.style.display = "none"; });
+}
+function renderToken() {
+  const key = decodeURIComponent(location.hash.slice(3));
+  const t = (D.tokens?.tokens || []).find((x) => x.key === key);
+  const view = $("tokenview");
+  if (!t) { view.innerHTML = `<a class="tvback" href="#tokens">← All tokens</a><p class="empty">Unknown token.</p>`; return; }
+  const prem = premOf(key), pools = (D.lp?.pools || []).filter((r) => r.pair.toUpperCase() === ("CC/" + t.symbol).toUpperCase());
+  const onTwo = (D.execution?.pairs || []).some((p) => p.key === key);
+  const venues = Object.entries(t.venues);
+  document.title = `${t.symbol} price on Canton DEXes · Canton Venues`;
+  view.innerHTML = `<a class="tvback" href="#tokens">← All tokens</a>
+    <div class="tvhead">${icon(t, 36)}<h1>${esc(t.symbol)}</h1><span class="vchip">${venues.length === 2 ? "Cantex · Tradecraft" : V[venues[0][0]]}</span></div>
+    <div class="tvprice"><span class="big num">${price(t.price_usd)}</span>${chg(t.change_24h)}<span class="muted">24h</span></div>
+    <div class="stats">
+      <div class="stat"><div class="k">7d change</div><div class="v">${chg(t.change_7d)}</div></div>
+      <div class="stat"><div class="k">Liquidity</div><div class="v num">${money(t.liquidity_usd)}</div></div>
+      <div class="stat"><div class="k">Volume (24h)</div><div class="v num">${money(t.volume_24h_usd)}</div></div>
+      <div class="stat"><div class="k">${prem ? (prem.kind === "peg" ? "vs $1.00" : "vs " + esc(prem.reference)) : "Outside reference"}</div><div class="v ${prem ? tone(prem.premium) : "flat"}">${prem ? pct(prem.premium) : "none"}</div></div>
+      <div class="stat"><div class="k">Venues</div><div class="v">${venues.length}</div></div>
+    </div>
+    <div class="grid2" style="${prem ? "" : "grid-template-columns:1fr"}">
+      <div class="panel"><h3>Price</h3><p class="sub">${t.history_source === "cantex candles" ? "Hourly, last 7 days, from Cantex candles in USD." : "Our own five-minute samples since tracking began."}</p><div class="tchart" id="tvprice"></div></div>
+      ${prem ? `<div class="panel"><h3>Premium to the outside price</h3><p class="sub">Canton price over ${prem.kind === "peg" ? "$1.00" : esc(prem.reference)}, five-minute samples.</p><div class="tchart" id="tvprem"></div></div>` : ""}
+    </div>
+    <div class="panel" style="margin-top:16px"><h3>By venue</h3>
+      <div class="tablewrap"><table class="mini"><thead><tr><th class="l">Venue</th><th>Price</th><th>Liquidity</th>${prem ? "<th>Premium</th>" : ""}</tr></thead><tbody>
+      ${venues.map(([v, x]) => `<tr><td class="l" style="color:${VC[v]};font-weight:700">${V[v]}</td><td class="num">${price(x.price_usd)}</td><td class="num">${money(x.liquidity_usd)}</td>${prem ? `<td class="num ${tone(prem.premium_by_venue?.[v])}">${pct(prem.premium_by_venue?.[v])}</td>` : ""}</tr>`).join("")}
+      </tbody></table></div>
+      ${pools.length ? `<p class="sub" style="margin:14px 0 4px">Pools</p><table class="mini"><tbody>${pools.map((r) => `<tr><td class="l">${esc(r.pair)} <span class="vchip">${V[r.venue]}</span></td><td class="num">${money(r.tvl_usd)} liquidity</td><td class="num">${money(r.volume_24h_usd)} 24h</td><td class="num">${r.fee_apr == null ? "–" : (r.fee_apr * 100).toFixed(1) + "% fee APR"}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${onTwo ? `<p style="margin:14px 0 0"><a href="#execution" data-compare="${esc(key)}">Compare Cantex and Tradecraft for ${esc(t.symbol)} →</a></p>` : ""}
+    </div>`;
+  const step = t.history_source === "cantex candles" ? 3600000 : 300000, n = (t.spark_7d || []).length, end = D.tokens.t * 1000;
+  lineChart("tvprice", (t.spark_7d || []).map((v, i) => [end - (n - 1 - i) * step, v]), (v) => price(v));
+  if (!prem) { /* no outside market */ }
+  else if (!D.history) { $("tvprem").innerHTML = '<p class="empty">Loading history…</p>'; loadHistory(); }
+  else {
+    const h = D.history, col = h.premium?.[key] || [];
+    const pts = h.t.map((tt, i) => [tt * 1000, col[i]]).filter((p) => p[1] != null);
+    lineChart("tvprem", pts, (v) => pct(v), { zero: true, color: "var(--accent)", empty: "History starts with the first samples; check back in an hour." });
+  }
+  window.scrollTo(0, 0);
+}
+function route() {
+  const tv = location.hash.startsWith("#t/");
+  document.body.classList.toggle("tv", tv);
+  if (tv && D.tokens) renderToken();
+  if (!tv) document.title = "Canton Venues: Canton DEX prices, premium and execution";
+}
+addEventListener("hashchange", route);
+
 /* ---------- execution ---------- */
 function execPair() { const ps = D.execution?.pairs || []; return ps.find((p) => p.key === S.pair) || ps[0]; }
 function costBps(pair, r, v) {
@@ -637,14 +743,16 @@ function render() {
   renderDesk();
   if (D.lp) renderLP();
   renderAPI();
+  route();
   save();
 }
 
 document.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-sort],[data-sortlink],[data-size],[data-color],[data-pair],[data-side],[data-lp],[data-lpall],.tile,tr.click");
+  const b = e.target.closest("[data-compare],[data-sort],[data-sortlink],[data-size],[data-color],[data-pair],[data-side],[data-lp],[data-lpall],.tile,tr.click");
   if (!b) return;
   const pick = (key) => { if ((D.execution?.pairs || []).some((p) => p.key === key)) { S.pair = key; renderExecution(); $("execution").scrollIntoView({ behavior: "smooth" }); } };
-  if (b.classList.contains("tile") || b.matches("tr.click")) { pick(b.dataset.key); save(); return; }
+  if (b.classList.contains("tile") || b.matches("tr.click")) { location.hash = "#t/" + encodeURIComponent(b.dataset.key); return; }
+  if (b.dataset.compare) { e.preventDefault(); location.hash = "#execution"; setTimeout(() => pick(b.dataset.compare), 0); return; }
   if (b.dataset.sort) { S.dir = S.sort === b.dataset.sort && S.dir === "desc" ? "asc" : "desc"; S.sort = b.dataset.sort; renderTable(); }
   if (b.dataset.sortlink) { S.sort = b.dataset.sortlink; S.dir = "desc"; renderTable(); }
   if (b.dataset.size) { S.size = b.dataset.size; renderMap(); }
