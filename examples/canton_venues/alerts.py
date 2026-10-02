@@ -15,6 +15,7 @@ MOVE_LIMIT = 0.05        # a token moving more than 5% in an hour
 MIN_LIQUIDITY_USD = 20_000
 COOLDOWN_S = 6 * 3600
 KEEP = 300
+EMOJI = {"peg": "💵", "premium": "🌍", "move": "⚡️", "route": "🔁"}
 
 
 @dataclass(frozen=True)

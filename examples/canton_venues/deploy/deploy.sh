@@ -5,7 +5,8 @@
 set -euo pipefail
 
 SERVER="${VENUES_SERVER:-root@46.225.216.13}"
-HOST="canton.46-225-216-13.nip.io"
+HOST="cantonvenues.com"
+OLD_HOST="canton.46-225-216-13.nip.io"
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 SHA="$(git -C "$REPO" rev-parse --short "${1:-HEAD}")"
 
@@ -23,11 +24,13 @@ ssh "$SERVER" "
   ln -sfn releases/$SHA current
   install -m 644 current/examples/canton_venues/site/index.html /var/www/canton-venues/index.html
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service /etc/systemd/system/canton-venues.service
-  if [ ! -f /etc/nginx/sites-available/canton-venues ]; then
+  # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
+  if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then
     install -m 644 current/examples/canton_venues/deploy/nginx.conf /etc/nginx/sites-available/canton-venues
     ln -sfn /etc/nginx/sites-available/canton-venues /etc/nginx/sites-enabled/canton-venues
     nginx -t && systemctl reload nginx
-    certbot --nginx -d $HOST --non-interactive --agree-tos --register-unsafely-without-email --redirect
+    certbot --nginx -d $HOST -d www.$HOST --non-interactive --agree-tos --register-unsafely-without-email --redirect
+    certbot --nginx -d $OLD_HOST --non-interactive --agree-tos --register-unsafely-without-email --reinstall --redirect
   fi
   systemctl daemon-reload
   systemctl enable canton-venues >/dev/null 2>&1

@@ -302,7 +302,8 @@ class Collector:
         token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
         if not (new and token and chat):
             return
-        body = "\n".join(f"• {a.html}" for a in new[:10])
+        body = "\n\n".join(f"{al.EMOJI.get(a.kind, '•')} {a.html}" for a in new[:10])
+        body += '\n\n📈 <a href="https://cantonvenues.com">cantonvenues.com</a>'
         try:
             # the URL carries the bot token: never log it (httpx is at WARNING)
             resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
