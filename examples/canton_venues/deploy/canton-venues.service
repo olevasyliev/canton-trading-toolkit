@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
 Environment=PYTHONUNBUFFERED=1
+# Optional: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for the alerts channel (chmod 600).
+EnvironmentFile=-/opt/canton-venues/.env
 ExecStart=/opt/canton-venues/.venv/bin/python collect.py --out /var/www/canton-venues --interval 300
 Restart=always
 RestartSec=30

@@ -25,6 +25,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+import alerts as al
 import httpx
 import model as m
 from model import CC, VenuePool
@@ -272,10 +273,45 @@ class Collector:
         write_json(self.api / "desk.json", self.desk)
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
         write_json(self.api / "history.json", self.history)
+        await self._alerts(tokens, premium, scan, now)
         self.tick_no += 1
         log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no,
                  len(tokens), sum(len(v) > 1 for v in books.values()),
                  sum(s["clears"] for s in scan), time.monotonic() - started)
+
+    # === alerts ============================================================
+
+    def _price_hour_ago(self, now: int) -> dict[str, float]:
+        h = self.history
+        idx = next((i for i in range(len(h["t"]) - 1, -1, -1) if h["t"][i] <= now - 3000), None)
+        if idx is None or h["t"][idx] < now - 4200:
+            return {}  # no sample between 50 and 70 minutes ago
+        return {k: col[idx] for k, col in h["usd"].items() if idx < len(col) and col[idx]}
+
+    async def _alerts(self, tokens, premium, scan, now) -> None:
+        path = self.api / "alerts.json"
+        state = load_json(path, {})
+        current = al.evaluate(tokens, premium, scan, self._price_hour_ago(now))
+        if "active" not in state:  # first run: learn what is already true, send nothing
+            state["active"] = sorted({a.key for a in current})
+            state.setdefault("feed", [])
+            write_json(path, state)
+            return
+        new = al.fire(state, current, now)
+        write_json(path, state)
+        token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
+        if not (new and token and chat):
+            return
+        body = "\n".join(f"• {a.html}" for a in new[:10])
+        try:
+            # the URL carries the bot token: never log it (httpx is at WARNING)
+            resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
+                "chat_id": chat, "text": body, "parse_mode": "HTML",
+                "disable_web_page_preview": "true"})
+            if resp.status_code != 200:
+                log.warning("telegram: HTTP %s", resp.status_code)
+        except httpx.HTTPError as exc:
+            log.warning("telegram: %s", type(exc).__name__)
 
     # === sections ==========================================================
 

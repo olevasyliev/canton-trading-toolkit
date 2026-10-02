@@ -234,7 +234,7 @@ pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; co
       Canton Venues
     </a>
     <nav class="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#premium">Premium</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API</a>
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#premium">Premium</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API</a>
     </nav>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
   </div>
@@ -266,6 +266,12 @@ pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; co
     <h2>Canton premium</h2>
     <p class="sub" id="premlead">The same asset priced on Canton's DEXes against its outside market. Positive means Canton pays more. Dots show each venue on its own.</p>
     <div class="grid2" id="prem"></div>
+  </section>
+
+  <section class="block" id="alerts">
+    <h2>Alerts</h2>
+    <p class="sub">Fired when a condition starts: a stablecoin more than 0.5% off $1, an asset more than 1% from its outside price, a token moving more than 5% in an hour, or a cross-venue route clearing its costs. Pools under $20K are ignored.</p>
+    <div class="panel"><table class="mini" id="alertfeed" style="margin-top:0"></table></div>
   </section>
 
   <section class="block" id="execution">
@@ -365,7 +371,7 @@ async function get(name) {
   return r.json();
 }
 async function load() {
-  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp"];
+  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts"];
   const got = await Promise.allSettled(names.map(get));
   got.forEach((g, i) => { if (g.status === "fulfilled") D[names[i]] = g.value; });
   if (!D.summary) { $("gstrip").textContent = "Market data is unavailable right now"; return; }
@@ -493,6 +499,14 @@ function renderPremium() {
   if (top) $("premlead").innerHTML = `Largest gap right now: <b>${esc(top.symbol)}</b> trades <b class="${tone(top.premium)}">${pctAbs(top.premium)} ${top.premium >= 0 ? "above" : "below"}</b> ${esc(top.reference)} on Canton. Positive means Canton pays more, and dots show each venue on its own.`;
 }
 
+/* ---------- alerts ---------- */
+const KIND = { peg: "Peg", premium: "Premium", route: "Spread", move: "Move" };
+function renderAlerts() {
+  const feed = (D.alerts?.feed || []).slice(-12).reverse();
+  $("alertfeed").innerHTML = feed.length ? "<tbody>" + feed.map((a) => `<tr><td class="l num muted" style="width:9em">${new Date(a.t * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td><td class="l" style="width:6em"><span class="vchip">${KIND[a.kind] || esc(a.kind)}</span></td><td class="l" style="white-space:normal">${esc(a.text)}</td></tr>`).join("") + "</tbody>"
+    : '<tbody><tr><td class="l empty">No alert has fired since the feed started. Conditions already true when it started are not announced.</td></tr></tbody>';
+}
+
 /* ---------- execution ---------- */
 function execPair() { const ps = D.execution?.pairs || []; return ps.find((p) => p.key === S.pair) || ps[0]; }
 function costBps(pair, r, v) {
@@ -593,7 +607,7 @@ function renderAPI() {
   const eps = [["summary", "Ecosystem figures and Cantex 24h stats"], ["tokens", "Every token: price, liquidity, volume, change, 7d sparkline"],
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Both venues at four sizes, both directions"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
-    ["lp", "Pool liquidity, volume and fee APR"], ["history", "Eight days of prices and premiums, five-minute steps"]];
+    ["lp", "Pool liquidity, volume and fee APR"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;
@@ -617,6 +631,7 @@ function render() {
   renderTop();
   if (D.tokens) { renderTable(); renderMap(); }
   if (D.premium) renderPremium();
+  renderAlerts();
   if (D.execution) renderExecution();
   renderDesk();
   if (D.lp) renderLP();
