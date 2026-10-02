@@ -243,9 +243,14 @@ def change(series: list[tuple[int, float]], now_ms: int, window_ms: int) -> floa
         return None
     target = now_ms - window_ms
     past = [v for t, v in series if t <= target]
-    if not past or past[-1] <= 0:
+    if not past:
         return None
-    return series[-1][1] / past[-1] - 1
+    # the median of the last three points before the window, so one wick in a thin pool (a
+    # single trade that moved the price for an hour) is not taken as the starting price
+    base = sorted(past[-3:])[len(past[-3:]) // 2]
+    if base <= 0:
+        return None
+    return series[-1][1] / base - 1
 
 
 # === saving and rebuilding pools ===========================================

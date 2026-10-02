@@ -146,3 +146,11 @@ def test_route_picks_best_venue_per_leg_and_goes_through_cc():
         m.route(books, "CC", "NOPE", Decimal(1))
     with pytest.raises(ValueError):
         m.route(books, "CC", "CC", Decimal(1))
+
+
+def test_change_ignores_a_one_bar_wick_at_the_start_of_the_window():
+    hour = 3_600_000
+    # steady at 100, one bar dips to 90 exactly 24h ago, steady again, now 101
+    series = [(i * hour, 100.0) for i in range(20)] + [(20 * hour, 90.0)] + \
+             [(i * hour, 100.0) for i in range(21, 44)] + [(44 * hour, 101.0)]
+    assert m.change(series, 44 * hour, 24 * hour) == pytest.approx(0.01)

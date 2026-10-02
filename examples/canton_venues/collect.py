@@ -206,14 +206,15 @@ class Collector:
         base = next((v for k, v in candles.items() if k.upper() == "CC-USDCX"), None)
         if not base:
             return {}
-        cc_at = {c.start_ms: c.close for c in base}
+        # a close belongs to the END of its bar
+        cc_at = {c.start_ms + 3_600_000: c.close for c in base}
         series = {CC: [(t, float(p * usdcx_usd)) for t, p in sorted(cc_at.items())]}
         for market, bars in candles.items():
             b, _, q = market.upper().rpartition("-")
             if q != CC or not b:
                 continue
-            pts = [(c.start_ms, float(c.close * cc_at[c.start_ms] * usdcx_usd))
-                   for c in bars if c.start_ms in cc_at]
+            pts = [(c.start_ms + 3_600_000, float(c.close * cc_at[c.start_ms + 3_600_000] * usdcx_usd))
+                   for c in bars if c.start_ms + 3_600_000 in cc_at]
             if pts:
                 series[b] = pts
         return series
