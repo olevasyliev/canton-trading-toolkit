@@ -41,6 +41,10 @@ HISTORY_KEEP_S = 8 * 24 * 3600
 DESK_KEEP = 400
 LLAMA = "https://api.llama.fi"
 GECKO = "https://api.coingecko.com/api/v3/simple/price"
+GECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
+# Cantex maps these to their underlying asset's CoinGecko id; that logo would
+# say they ARE that asset, so they get none.
+NO_LOGO = {"USX", "USDXLR"}
 
 
 def write_json(path: Path, data) -> None:
@@ -126,6 +130,18 @@ class Collector:
             self.slow["tokens_info"] = await self.cantex.tokens()
         except Exception as exc:  # noqa: BLE001
             log.warning("tokens info: %s", exc)
+        try:
+            ids = {t["coingecko_id"] for t in self.slow.get("tokens_info", []) if t.get("coingecko_id")}
+            if ids and "images" not in self.slow:
+                rows = await self._json(GECKO_MARKETS, {"vs_currency": "usd", "ids": ",".join(sorted(ids))})
+                by_id = {c["id"]: c["image"] for c in rows}
+                self.slow["images"] = {
+                    m.key(t["instrument_symbol"]): by_id.get(t.get("coingecko_id"))
+                    for t in self.slow["tokens_info"]
+                    if m.key(t["instrument_symbol"]) not in NO_LOGO and by_id.get(t.get("coingecko_id"))
+                }
+        except Exception as exc:  # noqa: BLE001
+            log.warning("coingecko images: %s", exc)
 
     async def _gecko(self) -> dict:
         ids = sorted({g for g, _ in m.REFERENCES.values()} | {USDCX_GECKO})
@@ -312,6 +328,7 @@ class Collector:
             out.append({
                 "symbol": pools[next(iter(pools))].token,
                 "key": sym,
+                "image": self.slow.get("images", {}).get(sym),
                 "price_usd": r(price, 8),
                 "liquidity_usd": r(sum(x["liquidity_usd"] for x in venues.values()), 2),
                 "volume_24h_usd": r(vol, 2),
@@ -452,6 +469,7 @@ class Collector:
             "cc_usd": r(cc_usd, 8),
             "cc_change_24h": r(m.change(cc_series, now_ms, 86400_000)),
             "cc_global_usd": r(gecko.get("canton-network", {}).get("usd"), 8),
+            "cc_image": self.slow.get("images", {}).get(CC),
             "cantex_24h": {"volume_cc": r(cx_volume.get("volume_cc"), 2),
                            "volume_usd": r(Decimal(cx_volume.get("volume_cc", 0)) * cc_usd, 2),
                            "swaps": int(Decimal(cx_volume.get("swap_count", 0))),
