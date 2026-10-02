@@ -53,3 +53,12 @@ def test_fire_on_crossing_then_quiet_then_cooldown():
     assert al.fire(state, [], now=2000) == []
     assert al.fire(state, [a], now=1000 + al.COOLDOWN_S + 1) == [a]
     assert [f["key"] for f in state["feed"]] == ["peg:X:above", "peg:X:above"]
+
+
+def test_batch_windows_and_grouping():
+    assert al.next_batch_time(0) == 4 * 3600
+    assert al.next_batch_time(4 * 3600) == 8 * 3600
+    html = al.batch_html([{"kind": "route", "html": "r1"}, {"kind": "peg", "html": "p1"},
+                          {"kind": "peg", "html": "p2"}], 0)
+    assert html.index("Stablecoins off peg") < html.index("Spreads that cleared")
+    assert "• p1" in html and "• p2" in html and "• r1" in html and "Big moves" not in html

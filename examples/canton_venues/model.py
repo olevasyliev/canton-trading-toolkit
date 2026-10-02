@@ -53,6 +53,9 @@ class VenuePool:
     fee: Decimal  # what a swap pays, as a fraction (for display and APR)
     lp_share: Decimal  # part of the fee that goes to liquidity providers
     _out: Callable[[bool, Decimal], Decimal] = field(repr=False, compare=False)
+    # how ``_out`` prices, so a pool can be saved and rebuilt (see pool_to_json)
+    formula: str = ""        # "cantex": fee on input; "tradecraft": half the fee on each leg
+    fee_param: Decimal = Decimal(0)
 
     @property
     def mid(self) -> Decimal:
@@ -243,3 +246,77 @@ def change(series: list[tuple[int, float]], now_ms: int, window_ms: int) -> floa
     if not past or past[-1] <= 0:
         return None
     return series[-1][1] / past[-1] - 1
+
+
+# === saving and rebuilding pools ===========================================
+
+
+def _cantex_out(cc: Decimal, tok: Decimal, fee: Decimal):
+    from canton_toolkit.venues.cantex_public import swap_output
+
+    def out(sell_cc: bool, amount: Decimal) -> Decimal:
+        return swap_output(cc, tok, amount, fee) if sell_cc else swap_output(tok, cc, amount, fee)
+    return out
+
+
+def _tradecraft_out(cc: Decimal, tok: Decimal, fee: Decimal):
+    from canton_toolkit.venues.tradecraft import swap_output
+
+    def out(sell_cc: bool, amount: Decimal) -> Decimal:
+        return swap_output(cc, tok, amount, fee) if sell_cc else swap_output(tok, cc, amount, fee)
+    return out
+
+
+FORMULAS = {"cantex": _cantex_out, "tradecraft": _tradecraft_out}
+
+
+def pool_to_json(p: VenuePool) -> dict:
+    return {"venue": p.venue, "token": p.token, "cc_reserve": str(p.cc_reserve),
+            "token_reserve": str(p.token_reserve), "formula": p.formula,
+            "fee_param": str(p.fee_param), "fee": str(p.fee), "lp_share": str(p.lp_share)}
+
+
+def pool_from_json(d: dict) -> VenuePool:
+    cc, tok, fee = Decimal(d["cc_reserve"]), Decimal(d["token_reserve"]), Decimal(d["fee_param"])
+    return VenuePool(d["venue"], d["token"], cc, tok, Decimal(d["fee"]), Decimal(d["lp_share"]),
+                     FORMULAS[d["formula"]](cc, tok, fee), d["formula"], fee)
+
+
+# === routing any amount =====================================================
+
+
+def best_leg(pools: dict[str, VenuePool], sell_cc: bool, amount: Decimal) -> tuple[str, Decimal, dict]:
+    """The venue that returns most for one CC-paired swap, and every venue's output."""
+    outs = {v: p.out(sell_cc, amount) for v, p in pools.items()}
+    best = max(outs, key=outs.get)
+    return best, outs[best], outs
+
+
+def route(books: dict[str, dict[str, VenuePool]], sell: str, buy: str, amount: Decimal) -> dict:
+    """Best route to sell ``amount`` of ``sell`` for ``buy``.
+
+    Every pool is paired with CC, so a token-to-token trade goes through CC in
+    two legs, and each leg is sent to its own best venue: the second leg's
+    price depends only on the CC amount, not on where the first leg filled.
+    """
+    sell, buy = key(sell), key(buy)
+    if sell == buy:
+        raise ValueError("sell and buy are the same token")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    for t in (sell, buy):
+        if t != CC and t not in books:
+            raise ValueError(f"no Canton DEX pool for {t}")
+    legs = []
+    if sell == CC:
+        v, got, outs = best_leg(books[buy], True, amount)
+        legs.append({"sell": CC, "buy": buy, "amount_in": amount, "venue": v, "out": got, "all": outs})
+    elif buy == CC:
+        v, got, outs = best_leg(books[sell], False, amount)
+        legs.append({"sell": sell, "buy": CC, "amount_in": amount, "venue": v, "out": got, "all": outs})
+    else:
+        v1, cc_mid, outs1 = best_leg(books[sell], False, amount)
+        legs.append({"sell": sell, "buy": CC, "amount_in": amount, "venue": v1, "out": cc_mid, "all": outs1})
+        v2, got, outs2 = best_leg(books[buy], True, cc_mid)
+        legs.append({"sell": CC, "buy": buy, "amount_in": cc_mid, "venue": v2, "out": got, "all": outs2})
+    return {"sell": sell, "buy": buy, "amount_in": amount, "amount_out": legs[-1]["out"], "legs": legs}

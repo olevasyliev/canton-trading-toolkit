@@ -96,3 +96,30 @@ def fire(state: dict, current: list[Alert], now: int) -> list[Alert]:
     feed.extend({"t": now, "kind": a.kind, "key": a.key, "text": a.text} for a in new)
     state["feed"] = feed[-KEEP:]
     return new
+
+
+BATCH_HOURS = 4
+
+
+def next_batch_time(now: int) -> int:
+    """The next window boundary (00, 04, 08 ... UTC) after ``now``."""
+    step = BATCH_HOURS * 3600
+    return (now // step + 1) * step
+
+
+def batch_html(batch: list[dict], now: int) -> str:
+    """Every alert of the window in one message, grouped by kind."""
+    titles = {"peg": "Stablecoins off peg", "premium": "Premium to world prices",
+              "move": "Big moves", "route": "Spreads that cleared costs"}
+    lines = [f"🔔 <b>Canton DEX alerts</b>, last {BATCH_HOURS}h", ""]
+    for kind in ("peg", "premium", "move", "route"):
+        items = [a["html"] for a in batch if a["kind"] == kind]
+        if not items:
+            continue
+        lines.append(f"{EMOJI[kind]} <b>{titles[kind]}</b>")
+        lines += [f"• {h}" for h in items[:8]]
+        if len(items) > 8:
+            lines.append(f"• and {len(items) - 8} more")
+        lines.append("")
+    lines.append('🔗 <a href="https://cantonvenues.com/#alerts">cantonvenues.com</a>')
+    return "\n".join(lines)

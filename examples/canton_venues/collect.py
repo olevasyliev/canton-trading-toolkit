@@ -32,7 +32,6 @@ import model as m
 from model import CC, VenuePool
 
 from canton_toolkit import CantexPublicData, TradecraftAdapter
-from canton_toolkit.venues.tradecraft import swap_output as tc_swap_output
 
 log = logging.getLogger("venues")
 
@@ -177,10 +176,8 @@ class Collector:
             if cc_res <= 0 or tok_res <= 0:
                 continue
 
-            def out(sell_cc, amount, s=s, tok_inst=tok_inst):
-                return s.output(cc_inst, tok_inst, amount) if sell_cc else s.output(tok_inst, cc_inst, amount)
-
-            pool = VenuePool("cantex", sym, cc_res, tok_res, s.fee, lp_share_cx, out)
+            pool = VenuePool("cantex", sym, cc_res, tok_res, s.fee, lp_share_cx,
+                             m.FORMULAS["cantex"](cc_res, tok_res, s.fee), "cantex", s.fee)
             prev = books.setdefault(m.key(sym), {}).get("cantex")
             if prev is None or pool.cc_reserve > prev.cc_reserve:
                 books[m.key(sym)]["cantex"] = pool
@@ -197,13 +194,10 @@ class Collector:
             if cc_res <= 0 or tok_res <= 0:
                 continue
 
-            def out(sell_cc, amount, st=st, tok_sym=tok_sym):
-                rin, rout = st.reserves_for(CC, tok_sym) if sell_cc else st.reserves_for(tok_sym, CC)
-                return tc_swap_output(rin, rout, amount, st.total_fee)
-
             share = st.lp_fee / st.total_fee if st.total_fee else Decimal(0)
             books.setdefault(m.key(sym), {})["tradecraft"] = VenuePool(
-                "tradecraft", sym, cc_res, tok_res, st.realized_fee, share, out)
+                "tradecraft", sym, cc_res, tok_res, st.realized_fee, share,
+                m.FORMULAS["tradecraft"](cc_res, tok_res, st.total_fee), "tradecraft", st.total_fee)
         return books
 
     def _usd_series(self, now_ms: int, usdcx_usd: Decimal) -> dict[str, list]:
@@ -273,6 +267,9 @@ class Collector:
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
+        write_json(self.api / "pools.json", {
+            "t": now, "cc_usd": float(cc_usd),
+            "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()}})
         write_json(self.api / "history.json", self.history)
         await self._alerts(tokens, premium, scan, now)
         await self._daily(summary, tokens, premium)
@@ -300,12 +297,16 @@ class Collector:
             write_json(path, state)
             return
         new = al.fire(state, current, now)
-        write_json(path, state)
-        if not new:
-            return
-        body = "\n\n".join(f"{al.EMOJI.get(a.kind, '•')} {a.html}" for a in new[:10])
-        body += '\n\n🔗 <a href="https://cantonvenues.com">cantonvenues.com</a>'
-        await self._telegram(body)
+        # the channel gets one batch per window, not a message per alert
+        state.setdefault("pending", []).extend({"kind": a.kind, "html": a.html} for a in new)
+        if now >= state.get("next_batch", 0):
+            batch, state["pending"] = state["pending"], []
+            state["next_batch"] = al.next_batch_time(now)
+            write_json(path, state)  # recorded before sending: a failed send never duplicates
+            if batch:
+                await self._telegram(al.batch_html(batch, now))
+        else:
+            write_json(path, state)
 
     async def _daily(self, summary, tokens, premium) -> None:
         path = self.api / "daily.json"
