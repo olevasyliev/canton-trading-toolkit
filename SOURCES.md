@@ -273,3 +273,32 @@ not fit (it is off by ~2e-6 relative, well outside that).
   JSON envelope, so the error mapper handles both.
 - `POST /vault-holdings`, required by step 5a of the venue's own DAR
   integration guide, is absent from the published OpenAPI document.
+
+# Cantex public market data (`venues/cantex_public.py`)
+
+No account and no key: these are Cantex's public routes, documented at
+`https://docs.cantex.io/developers/public-api/`. Shapes verified against
+`https://api.cantex.io` on 2026-10-02.
+
+## Endpoints consumed
+
+| Route | Used by | What it returns |
+|---|---|---|
+| `GET /v1/public/pools/state` | `pool_states`, `pools`, `quote` | reserves, `fee_rate`, `price` (token_b per token_a), `tvl_cc`, both instruments with symbols |
+| `GET /v1/public/tokens/info` | `tokens` | every token with its `coingecko_id` (null when unpriceable) |
+| `GET /v1/public/volume` | `volume` | trailing-24h `volume_cc`, `fees_cc`, `lp_fees_cc`, `swap_count` |
+| `GET /v1/public/stats` | `stats` | daily CC volume series, active traders |
+| `GET /v1/public/markets/info` | `markets` | market symbols, `source` (`cantex` or `external`), channel names |
+| `GET /v1/public/coingecko/tickers` | `tickers` | per pair last price and 24h base/target volume (JSON numbers) |
+| `wss://…/v1/ws/public`, `market.<SYMBOL>.candles.<PERIOD>` | `candles` | a snapshot of recent bars on subscribe; 500 hourly bars on 2026-10-02 |
+
+## The pricing, measured
+
+`quote()` prices locally: constant product with the fee on the input. Against
+the authenticated `POST /v2/pools/quote` it agreed to the 10th decimal on
+CC/USDCx and CBTC/CC at 100 and 10,000 CC, both directions (2026-10-02). The
+authenticated quote adds a flat CC network fee (0.82–1.24 CC in those runs)
+that `/pools/state` does not carry, so it is not in `quote()`. The public
+`POST /v1/public/connect/quote` prices the Connect transfer-with-memo path
+instead (0.25% fee, 2 CC network fee that day), so it is not used as the API
+trader's price.

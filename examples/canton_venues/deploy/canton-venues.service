@@ -1,0 +1,16 @@
+[Unit]
+Description=Canton Venues collector: public Canton DEX data, every five minutes (read-only, no keys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/canton-venues/.venv/bin/python collect.py --out /var/www/canton-venues --interval 300
+Restart=always
+RestartSec=30
+MemoryMax=300M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

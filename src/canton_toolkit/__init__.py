@@ -23,6 +23,7 @@ from .core.venue import (
     VenueRequestError,
 )
 from .venues.cantex import CantexAdapter
+from .venues.cantex_public import CantexPublicData
 from .venues.ekiden import EkidenAdapter
 from .venues.dexref import (
     AllocationSwapRoute,
@@ -58,6 +59,7 @@ __all__ = [
     "VenueAuthError",
     "VenueRequestError",
     "CantexAdapter",
+    "CantexPublicData",
     "EkidenAdapter",
     "DexRefAdapter",
     "DemoAllocationAuthorizer",
