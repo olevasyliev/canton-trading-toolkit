@@ -20,23 +20,23 @@ ssh "$SERVER" "
   set -e
   cd /opt/canton-venues
   test -d .venv || python3 -m venv .venv
-  .venv/bin/pip install -q --upgrade ./releases/$SHA
+  .venv/bin/pip install -q --upgrade \"./releases/$SHA[venues]\"
   ln -sfn releases/$SHA current
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png /var/www/canton-venues/
-  install -m 644 current/examples/canton_venues/deploy/canton-venues.service /etc/systemd/system/canton-venues.service
+  install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service /etc/systemd/system/
   # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
   if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then
     install -m 644 current/examples/canton_venues/deploy/nginx.conf /etc/nginx/sites-available/canton-venues
     ln -sfn /etc/nginx/sites-available/canton-venues /etc/nginx/sites-enabled/canton-venues
     nginx -t && systemctl reload nginx
-    certbot --nginx -d $HOST -d www.$HOST --non-interactive --agree-tos --register-unsafely-without-email --redirect
+    certbot --nginx -d $HOST -d www.$HOST --keep-until-expiring --non-interactive --agree-tos --register-unsafely-without-email --redirect
     certbot --nginx -d $OLD_HOST --non-interactive --agree-tos --register-unsafely-without-email --reinstall --redirect
   fi
   systemctl daemon-reload
-  systemctl enable canton-venues >/dev/null 2>&1
-  systemctl restart canton-venues
+  systemctl enable canton-venues canton-venues-mcp >/dev/null 2>&1
+  systemctl restart canton-venues canton-venues-mcp
   sleep 3
-  systemctl is-active canton-venues
+  systemctl is-active canton-venues canton-venues-mcp
   ls -1t releases | tail -n +6 | sed 's|^|releases/|' | xargs -r rm -r --"
 
 echo "✓ https://$HOST"

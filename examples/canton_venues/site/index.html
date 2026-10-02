@@ -255,7 +255,7 @@ body:not(.tv) #tokenview { display: none; }
       Canton Venues
     </a>
     <nav class="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#premium">Premium</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API</a>
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#premium">Premium</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
     </nav>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
   </div>
@@ -329,6 +329,12 @@ body:not(.tv) #tokenview { display: none; }
     <p class="sub">Every number on this page is a JSON file anyone can read. No key, no sign-up, cross-origin enabled, refreshed every five minutes.</p>
     <div class="apigrid" id="apilist"></div>
     <pre class="curl" id="curl"></pre>
+    <div class="panel" style="margin-top:20px">
+      <h3>For AI agents: MCP</h3>
+      <p class="sub">Connect Claude or any MCP client to live Canton DEX data. Ask for quotes at any size, premiums, spreads or alerts in plain language. Read-only, no key.</p>
+      <pre class="curl" style="margin-top:4px">https://cantonvenues.com/mcp</pre>
+      <p class="sub" style="margin:12px 0 0">Add it in Claude as a custom connector, or in any MCP client as a streamable HTTP server. Tools: market_overview, list_tokens, token, quote, premiums, spreads, alerts, pools. Try “where is CBTC cheapest for $20K right now?”</p>
+    </div>
   </section>
 
   <footer class="foot">

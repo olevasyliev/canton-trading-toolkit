@@ -1,0 +1,17 @@
+[Unit]
+Description=Canton Venues MCP server: Canton DEX market data for AI agents (read-only)
+After=network-online.target canton-venues.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+Environment=VENUES_API_DIR=/var/www/canton-venues/api/v1
+ExecStart=/opt/canton-venues/.venv/bin/python mcp_server.py --http --host 127.0.0.1 --port 8097
+Restart=always
+RestartSec=10
+MemoryMax=200M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

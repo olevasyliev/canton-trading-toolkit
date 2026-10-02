@@ -20,6 +20,10 @@ dev = [
     "pytest-asyncio",
     "ruff",
 ]
+# the Canton Venues example: its MCP server
+venues = [
+    "mcp>=2.2,<3",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/canton_toolkit"]

@@ -1,0 +1,252 @@
+"""Canton Venues MCP server: Canton DEX market data for AI agents.
+
+Read-only. Every tool answers from the JSON the collector publishes, so the
+numbers match https://cantonvenues.com exactly. Quotes for any amount are
+priced from live pool reserves with each venue's own formula.
+
+Two ways to run it:
+
+    # remote, as hosted at https://cantonvenues.com/mcp
+    python mcp_server.py --http --port 8097
+
+    # local stdio, reading the public API over HTTPS
+    python mcp_server.py
+
+Data source: ``VENUES_API_DIR`` (the collector's output directory) when set,
+otherwise ``VENUES_API_URL`` (default https://cantonvenues.com/api/v1).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from decimal import Decimal
+from pathlib import Path
+
+import httpx
+import model as m
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
+
+API_DIR = os.getenv("VENUES_API_DIR")
+API_URL = os.getenv("VENUES_API_URL", "https://cantonvenues.com/api/v1").rstrip("/")
+CACHE_S = 30
+SITE = "https://cantonvenues.com"
+
+_cache: dict[str, tuple[float, object]] = {}
+
+
+def load(name: str):
+    """One API file, cached for half a minute (the collector writes every five)."""
+    hit = _cache.get(name)
+    if hit and time.monotonic() - hit[0] < CACHE_S:
+        return hit[1]
+    if API_DIR:
+        data = json.loads((Path(API_DIR) / f"{name}.json").read_text())
+    else:
+        data = httpx.get(f"{API_URL}/{name}.json", timeout=20).json()
+    _cache[name] = (time.monotonic(), data)
+    return data
+
+
+def _r(x, n=6):
+    return None if x is None else round(float(x), n)
+
+
+def _books() -> tuple[dict, float]:
+    raw = load("pools")
+    books = {k: {v: m.pool_from_json(d) for v, d in vs.items()} for k, vs in raw["pools"].items()}
+    return books, raw["cc_usd"]
+
+
+def _token_row(key: str) -> dict | None:
+    return next((t for t in load("tokens")["tokens"] if t["key"] == m.key(key)), None)
+
+
+def _premium_row(key: str) -> dict | None:
+    return next((a for a in load("premium")["assets"] if a["key"] == m.key(key) and a["status"] == "ok"), None)
+
+
+server = MCPServer(
+    "canton-venues",
+    title="Canton Venues",
+    description="Live market data for Canton Network DEXes (Cantex, Tradecraft): prices, "
+                "premium to global markets, best execution, spreads, alerts.",
+    instructions=(
+        "Market data for Canton Network DEXes, refreshed every five minutes. Prices are in USD. "
+        "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: it prices "
+        "both venues from live reserves and routes token-to-token trades through CC. Network fees "
+        "(about 1 CC per Cantex swap) are not included in quotes. Nothing here executes a trade."
+    ),
+    website_url=SITE,
+    version="1.0.0",
+)
+
+
+@server.tool(title="Canton DEX market overview")
+def market_overview() -> dict:
+    """Canton DEX market right now: CC price, ecosystem volume and TVL, top movers, the largest
+    premiums to global prices, and the latest alerts."""
+    s = load("summary")
+    toks = [t for t in load("tokens")["tokens"] if (t.get("liquidity_usd") or 0) >= 20_000
+            and t["key"] not in m.STABLES and t.get("change_24h") is not None]
+    toks.sort(key=lambda t: t["change_24h"], reverse=True)
+    prem = [a for a in load("premium")["assets"] if a["status"] == "ok"]
+    prem.sort(key=lambda a: -abs(a["premium"]))
+    feed = load("alerts").get("feed", [])[-5:]
+    return {
+        "as_of": s["t"],
+        "cc_usd": s["cc_usd"],
+        "cc_change_24h": s.get("cc_change_24h"),
+        "cc_global_usd": s.get("cc_global_usd"),
+        "canton_dex_volume_24h_usd": (s.get("ecosystem") or {}).get("dex_volume_24h"),
+        "volume_by_venue_24h_usd": {v["name"]: v["volume_24h"] for v in (s.get("ecosystem") or {}).get("venues", [])},
+        "canton_defi_tvl_usd": (s.get("ecosystem") or {}).get("tvl"),
+        "cantex_swaps_24h": (s.get("cantex_24h") or {}).get("swaps"),
+        "top_gainers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[:5]],
+        "top_losers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[::-1][:5]],
+        "largest_premiums": [{"symbol": a["symbol"], "vs": a["reference"], "premium": a["premium"]} for a in prem[:5]],
+        "latest_alerts": [a["text"] for a in feed],
+        "source": SITE,
+    }
+
+
+@server.tool(title="List Canton DEX tokens")
+def list_tokens(sort_by: str = "liquidity", limit: int = 30) -> dict:
+    """Every token on Canton DEXes with price, 24h/7d change, liquidity and volume.
+    sort_by: liquidity, volume, change_24h, change_7d or premium."""
+    keys = {"liquidity": "liquidity_usd", "volume": "volume_24h_usd", "change_24h": "change_24h",
+            "change_7d": "change_7d", "premium": "premium"}
+    if sort_by not in keys:
+        raise ToolError(f"sort_by must be one of {sorted(keys)}")
+    prem = {a["key"]: a["premium"] for a in load("premium")["assets"] if a["status"] == "ok"}
+    rows = [{"symbol": t["symbol"], "price_usd": t["price_usd"], "change_24h": t["change_24h"],
+             "change_7d": t["change_7d"], "liquidity_usd": t["liquidity_usd"],
+             "volume_24h_usd": t["volume_24h_usd"], "venues": sorted(t["venues"]),
+             "premium": prem.get(t["key"])} for t in load("tokens")["tokens"]]
+    k = keys[sort_by]
+    rows.sort(key=lambda r: (r[k] is None, -(abs(r[k]) if k == "premium" and r[k] is not None else (r[k] or 0))))
+    return {"as_of": load("tokens")["t"], "tokens": rows[:max(1, min(limit, 100))]}
+
+
+@server.tool(title="Token detail")
+def token(symbol: str) -> dict:
+    """One token: price, changes, liquidity and volume, price on each venue, premium to its outside
+    reference, its pools with fee APR, and hourly USD prices for the last 7 days."""
+    t = _token_row(symbol)
+    if t is None:
+        raise ToolError(f"unknown token {symbol!r}; call list_tokens() for symbols")
+    p = _premium_row(symbol)
+    pools = [x for x in load("lp")["pools"] if m.key(x["pair"]) == m.key(f"CC/{t['symbol']}")]
+    return {
+        "symbol": t["symbol"], "price_usd": t["price_usd"], "change_24h": t["change_24h"],
+        "change_7d": t["change_7d"], "liquidity_usd": t["liquidity_usd"], "volume_24h_usd": t["volume_24h_usd"],
+        "by_venue": t["venues"],
+        "premium": None if p is None else {"vs": p["reference"], "premium": p["premium"],
+                                           "by_venue": p.get("premium_by_venue"),
+                                           "outside_price_usd": p.get("reference_usd")},
+        "pools": pools,
+        "price_history_7d": t.get("spark_7d"),
+        "history_step": "1h" if t.get("history_source") == "cantex candles" else "5m",
+        "page": f"{SITE}/#t/{t['key']}",
+    }
+
+
+@server.tool(title="Quote a trade on Canton DEXes")
+def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | None = None) -> dict:
+    """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`,
+    priced from live reserves on Cantex and Tradecraft. Shows every venue's output per leg; a
+    token-to-token trade routes through CC with each leg on its best venue. Pool fees and price
+    impact are included, network fees are not."""
+    books, cc_usd = _books()
+    if (amount is None) == (amount_usd is None):
+        raise ToolError("give exactly one of amount or amount_usd")
+    if amount is None:
+        price = cc_usd if m.key(sell) == m.CC else (_token_row(sell) or {}).get("price_usd")
+        if not price:
+            raise ToolError(f"no USD price for {sell!r}")
+        amount = amount_usd / price
+    try:
+        r = m.route(books, sell, buy, Decimal(str(amount)))
+    except ValueError as exc:
+        raise ToolError(f"{exc}; call list_tokens() for symbols") from exc
+    names = {t["key"]: t["symbol"] for t in load("tokens")["tokens"]} | {m.CC: "CC"}
+
+    def leg(L):
+        name = names
+        outs = {v: _r(o, 10) for v, o in L["all"].items()}
+        worst = min(L["all"].values())
+        return {"sell": name.get(L["sell"], L["sell"]), "buy": name.get(L["buy"], L["buy"]),
+                "amount_in": _r(L["amount_in"], 10), "best_venue": L["venue"], "amount_out": _r(L["out"], 10),
+                "output_by_venue": outs,
+                "edge_over_worst": _r(L["out"] / worst - 1, 6) if worst > 0 and len(outs) > 1 else None}
+
+    return {"sell": names.get(r["sell"], r["sell"]), "buy": names.get(r["buy"], r["buy"]), "amount_in": _r(r["amount_in"], 10),
+            "amount_out": _r(r["amount_out"], 10), "legs": [leg(L) for L in r["legs"]],
+            "as_of": load("pools")["t"], "network_fees": "excluded (about 1 CC per Cantex swap)"}
+
+
+@server.tool(title="Canton premium to global prices")
+def premiums(kind: str = "all") -> dict:
+    """How far Canton DEX prices sit from outside markets: CBTC vs BTC, cETH vs ETH, gold, silver,
+    stock tokens, CC vs global CC, and every stablecoin vs $1. kind: all, reference or peg."""
+    rows = [a for a in load("premium")["assets"] if a["status"] == "ok" and (kind == "all" or a["kind"] == kind)]
+    rows.sort(key=lambda a: -abs(a["premium"]))
+    return {"as_of": load("premium")["t"], "assets": [
+        {"symbol": a["symbol"], "kind": a["kind"], "vs": a["reference"], "premium": a["premium"],
+         "canton_usd": a["canton_usd"], "outside_usd": a["reference_usd"], "by_venue": a.get("premium_by_venue")}
+        for a in rows]}
+
+
+@server.tool(title="Cross-venue spreads")
+def spreads(limit: int = 10) -> dict:
+    """Buy-on-one-venue, sell-on-the-other round trips at their best size, after a 3 CC network
+    cost; `clears` is true when one nets at least $0.50."""
+    s = load("scan")
+    return {"as_of": s["t"], "round_trip_cost_cc": s["round_trip_cost_cc"], "routes": s["routes"][:max(1, min(limit, 50))]}
+
+
+@server.tool(title="Recent alerts")
+def alerts(limit: int = 20) -> dict:
+    """Alerts fired on Canton DEXes: stablecoin peg breaks, premiums over 1%, hourly moves over 5%,
+    and spreads that clear their costs. Newest last."""
+    feed = load("alerts").get("feed", [])
+    return {"alerts": feed[-max(1, min(limit, 300)):], "channel": "https://t.me/cantonvenues"}
+
+
+@server.tool(title="Liquidity pools")
+def pools(sort_by: str = "tvl", limit: int = 20) -> dict:
+    """Pools on Cantex and Tradecraft with liquidity, 24h volume, fee and LP fee APR from the last
+    24 hours of volume. sort_by: tvl, volume or apr."""
+    k = {"tvl": "tvl_usd", "volume": "volume_24h_usd", "apr": "fee_apr"}.get(sort_by)
+    if k is None:
+        raise ToolError("sort_by must be tvl, volume or apr")
+    rows = sorted(load("lp")["pools"], key=lambda r: -(r.get(k) or 0))
+    return {"as_of": load("lp")["t"], "pools": rows[:max(1, min(limit, 60))]}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Canton Venues MCP server")
+    ap.add_argument("--http", action="store_true", help="serve streamable HTTP instead of stdio")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8097)
+    args = ap.parse_args()
+    if not args.http:
+        server.run()
+        return
+    server.run(
+        "streamable-http", host=args.host, port=args.port, stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["cantonvenues.com", "www.cantonvenues.com", "127.0.0.1:*", "localhost:*"],
+            allowed_origins=["https://cantonvenues.com", "https://www.cantonvenues.com",
+                             "https://claude.ai", "http://localhost:*", "http://127.0.0.1:*"],
+        ),
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -113,3 +113,36 @@ def test_change_needs_a_point_at_or_before_the_window():
 def test_fee_apr():
     assert m.fee_apr(100_000, 0.003, 2 / 3, 1_000_000) == pytest.approx(0.073)
     assert m.fee_apr(1, 0.003, 1, 0) is None
+
+
+def _real(venue, token, cc, tok):
+    fee = Decimal("0.0005") if venue == "cantex" else Decimal("0.003")
+    return m.VenuePool(venue, token, Decimal(cc), Decimal(tok), fee, Decimal("0.9"),
+                       m.FORMULAS[venue](Decimal(cc), Decimal(tok), fee), venue, fee)
+
+
+def test_pool_survives_a_json_round_trip_and_prices_the_same():
+    for venue in ("cantex", "tradecraft"):
+        p = _real(venue, "CBTC", "1600000", "2.3")
+        q = m.pool_from_json(m.pool_to_json(p))
+        for sell_cc, amount in ((True, Decimal(5000)), (False, Decimal("0.01"))):
+            assert q.out(sell_cc, amount) == p.out(sell_cc, amount)
+
+
+def test_route_picks_best_venue_per_leg_and_goes_through_cc():
+    books = {
+        "USDCX": {"cantex": _real("cantex", "USDCx", "1600000", "196000"),
+                  "tradecraft": _real("tradecraft", "USDCx", "6000000", "735000")},
+        "CBTC": {"cantex": _real("cantex", "CBTC", "3000000", "4.3"),
+                 "tradecraft": _real("tradecraft", "CBTC", "600000", "0.86")},
+    }
+    r = m.route(books, "usdcx", "cbtc", Decimal(20000))
+    assert [(L["sell"], L["buy"]) for L in r["legs"]] == [("USDCX", "CC"), ("CC", "CBTC")]
+    for L in r["legs"]:
+        assert L["out"] == max(L["all"].values())
+    assert r["legs"][1]["amount_in"] == r["legs"][0]["out"]
+    assert len(m.route(books, "CC", "CBTC", Decimal(1000))["legs"]) == 1
+    with pytest.raises(ValueError):
+        m.route(books, "CC", "NOPE", Decimal(1))
+    with pytest.raises(ValueError):
+        m.route(books, "CC", "CC", Decimal(1))
