@@ -29,6 +29,7 @@ from .venues.oneswap import OneSwapPublicData
 from .venues.poolparty import PoolPartyPublicData
 from .venues.reserves import ReservePool, constant_product_output
 from .venues.rocky import RockyAdapter
+from .venues.temple import TempleAdapter
 from .venues.dexref import (
     AllocationSwapRoute,
     DemoAllocationAuthorizer,
@@ -75,6 +76,7 @@ __all__ = [
     "PoolPartyPublicData",
     "ReservePool",
     "RockyAdapter",
+    "TempleAdapter",
     "constant_product_output",
     "LiquidityQuote",
     "swap_output",

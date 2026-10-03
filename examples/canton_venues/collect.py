@@ -7,6 +7,7 @@ Sources, all public, no keys:
   Ekiden      MainNet perpetuals                     (EkidenAdapter)
   OneSwap     pool reserves                          (OneSwapPublicData)
   Pool Party  pool reserves and volume               (PoolPartyPublicData)
+  Temple      settled volume per market, no key      (TempleAdapter)
   DefiLlama   Canton DEX volume and chain TVL        (ecosystem context)
   CoinGecko   outside prices for the premium board
 
@@ -41,6 +42,7 @@ from canton_toolkit import (
     OneSwapPublicData,
     PoolPartyPublicData,
     RockyAdapter,
+    TempleAdapter,
     TradecraftAdapter,
 )
 
@@ -68,7 +70,7 @@ ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
 # filled in live; "llama" names the DefiLlama protocol a volume comes from.
 VENUES = [
     {"id": "temple", "name": "Temple", "kind": "Spot order book", "status": "volume",
-     "llama": "Temple", "note": "Prices and book need a key from the Temple team. Volume via DefiLlama."},
+     "llama": "Temple", "note": "Settled volume per market from Temple's public API. Prices and book need an account key."},
     {"id": "cantex", "name": "Cantex", "kind": "Spot AMM", "status": "priced",
      "note": "Reserves, volume and candles from the public API."},
     {"id": "tradecraft", "name": "Tradecraft", "kind": "Spot AMM", "status": "priced",
@@ -119,7 +121,7 @@ class Collector:
         # order-book venues: optional, each fails alone and reconnects on a later tick
         self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"),
                          "ekiden": EkidenAdapter(), "oneswap": OneSwapPublicData(),
-                         "poolparty": PoolPartyPublicData()}
+                         "poolparty": PoolPartyPublicData(), "temple": TempleAdapter()}
         self.live: set[str] = set()
         self.cc_usd_last = Decimal(0)
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
@@ -180,6 +182,14 @@ class Collector:
             }
         except Exception as exc:  # noqa: BLE001
             log.warning("defillama: %s", exc)
+        temple = await self._venue("temple")
+        if temple is not None:
+            try:
+                vol = await temple.settled_volume(24)
+                self.slow["temple_volume"] = {mk["symbol"]: float(mk["quote_volume"]) for mk in vol["markets"]}
+                self.slow["temple_total"] = float(vol["total_volume_usd"])
+            except Exception as exc:  # noqa: BLE001
+                self._drop("temple", exc)
         try:
             self.slow["tokens_info"] = await self.cantex.tokens()
         except Exception as exc:  # noqa: BLE001
@@ -326,6 +336,8 @@ class Collector:
             perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
         own = {"cantex": cx_volume_usd, "tradecraft": sum(self.slow.get("tc_volume", {}).values()) or None,
                "rocky": rocky_spot_vol, **perp_vol}
+        if self.slow.get("temple_total") is not None:
+            own["temple"] = self.slow["temple_total"]
         if "poolparty" in self.live and self.slow.get("pp_volume") is not None:
             own["poolparty"] = self._pp_volume_usd(self.cc_usd_last)[1]
         rows = []
@@ -644,6 +656,9 @@ class Collector:
                 vol_cx[target] = vol_cx.get(target, 0) + float(t["base_volume"]) * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
         pp_vol, _ = self._pp_volume_usd(cc_usd)
+        # Temple quotes everything in USDCx, which the settled-volume route already reports in dollars
+        temple_vol = {m.key(s.partition("/")[0]): v for s, v in (self.slow.get("temple_volume") or {}).items()
+                      if s.endswith("/USDCx")}
         out = []
         for sym, pools in books.items():
             price = prices[sym]
@@ -652,7 +667,7 @@ class Collector:
                 venues[v] = {"price_usd": r(cc_usd / p.mid, 8),
                              "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
                              "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
-            vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0)
+            vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0) + temple_vol.get(sym, 0.0)
             if sym in ob:
                 # a book's liquidity is what rests within 1% of mid, not a pool's full reserves
                 venues["rocky"] = {"price_usd": ob[sym]["price_usd"], "liquidity_usd": ob[sym]["depth_usd"],

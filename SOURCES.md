@@ -345,3 +345,22 @@ Fees: OneSwap's docs state "the pool's 0.30% swap fee" plus a per-swap network f
 input, "typically around $1.5–2"; the collector charges $1.75 per OneSwap swap in the scanner. Pool Party
 publishes no fee or curve; 0.30% is CCTools' `feeRate` for every Send pool (third party). Quotes
 (`POST /api/rt/pool/{id}/quote`) need an OneSwap `sk_live_` key and are not used.
+
+---
+
+# Temple adapter (`venues/temple.py`)
+
+Spot order books on Canton; the largest venue by volume.
+
+- **No key:** `GET https://api.templedigitalgroup.com/api/exchange/settled_volume?start_time=<RFC3339>&end_time=<RFC3339>`
+  returns `total_volume_usd`, `by_quote`, `trade_count` and `markets[]` (`symbol` like `CBTC/USDCx`,
+  `quote_volume` in USD, `trade_count`). Verified live 2026-10-03 (epoch seconds and milliseconds are
+  rejected: "start_time must be RFC3339"). DefiLlama's Temple adapter reads the same route.
+- **Key required (`X-API-Key`):** `/api/v1/market/ticker`, `/api/v1/market/orderbook` (`symbol`, `levels`,
+  `precision`), `/api/v1/market/trades` (`symbol`, `limit` ≤ 500). Taken from the SDK
+  `@temple-digital-group/temple-canton-js` 2.1.10: `dist/api/index.js` (routes, `normalizeSymbol` CC→Amulet),
+  `dist/api/tokenStore.js` (`X-API-Key` header), `dist/api/types.d.ts` (shapes), `src/config/index.js`
+  (mainnet `https://api.templedigitalgroup.com`, testnet `https://api-testnet.templedigitalgroup.com`).
+  Without a key the REST routes answer `API_KEY_AUTH_FAILED` and the WebSocket handshake 401 (checked
+  2026-10-03). Keys are issued per account in the app (Settings > API Keys, `/settings?tab=api-keys` in
+  the MainNet app bundle). **The keyed shapes are not yet verified against live responses.**
