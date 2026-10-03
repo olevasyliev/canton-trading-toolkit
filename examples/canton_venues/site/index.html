@@ -378,6 +378,7 @@ body:not(.tv) #tokenview { display: none; }
       <div class="panel"><h3>How long a spread lives</h3><p class="sub">Spreads clearing $0.50 after costs, by lifetime. Snapshots every 20 seconds, so the first bar means gone by the next one or two.</p><div id="studyhist"></div></div>
       <div class="panel"><h3>What it adds up to</h3><div id="studystats"></div></div>
     </div>
+    <div class="panel" id="studyrunswrap" style="margin-top:16px"><h3>Every run</h3><p class="sub">One hour a day at a random hour, so over time the runs cover the whole clock.</p><div id="studyruns"></div></div>
   </section>
 
   <section class="block" id="yields">
@@ -462,7 +463,7 @@ async function get(name) {
   return r.json();
 }
 async function load() {
-  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts", "venues", "perps"];
+  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts", "venues", "perps", "spreads"];
   const got = await Promise.allSettled(names.map(get));
   got.forEach((g, i) => { if (g.status === "fulfilled") D[names[i]] = g.value; });
   if (!D.summary) { $("gstrip").textContent = "Market data is unavailable right now"; return; }
@@ -870,20 +871,27 @@ function renderDesk() {
 
 /* ---------- spread study (one measured run, fixed data) ---------- */
 const STUDY = {"start": 1791038134, "end": 1791045315, "interval_s": 20, "samples": 360, "episodes": 19, "median_life_s": 60, "gone_fast": 6, "pools_changed": 12, "typical_best_net": 0.41, "share_any_clearing": 0.34, "capture_usd": 34.17, "median_net": 0.78, "median_size": 306, "stable_episodes": 1, "hist": [{"label": "under 40 s", "n": 6}, {"label": "40-80 s", "n": 5}, {"label": "80-160 s", "n": 4}, {"label": "160 s-10 min", "n": 2}, {"label": "over 10 min", "n": 2}], "fees": {"CC-USDCX": 1.2, "CBTC-CC": 0.824, "EDELX-CC": 0.667, "FRXUSD.B-CC": 1.091}, "fee_median": 0.864, "fee_quotes": 96, "top": [{"token": "USDCX", "buy": "tradecraft", "sell": "cantex", "life_s": 80, "net": 10.09, "size": 1266}, {"token": "CBTC", "buy": "cantex", "sell": "rocky", "life_s": 80, "net": 6.08, "size": 727}, {"token": "CBTC", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.36, "size": 384}, {"token": "CETH", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.23, "size": 459}, {"token": "CETH", "buy": "cantex", "sell": "rocky", "life_s": 20, "net": 2.08, "size": 386}]};
+function studyDur(r) { const h = (r.end - r.start) / 3600; return h >= 1.5 ? h.toFixed(0) + " h" : h >= 0.9 ? "1 h" : Math.round(h * 60) + " min"; }
 function renderStudy() {
-  const s = STUDY, d = new Date(s.start * 1000), hrs = (s.end - s.start) / 3600;
-  const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
-  $("studylead").innerHTML = `A ${hrs.toFixed(0)}-hour measurement on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} spreads</b> cleared $0.50 after costs; the median one lived <b>${s.median_life_s} seconds</b>, and in ${s.pools_changed} of ${s.episodes} the pools traded while it stood, so other traders are already closing them.`;
+  // the first, hand-run measurement is fixed here; daily runs come from spreads.json
+  const runs = [STUDY, ...((D.spreads && D.spreads.runs) || [])].filter((r) => r.episodes != null);
+  const s = runs[runs.length - 1], d = new Date(s.start * 1000);
+  const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) + ", from " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("studylead").innerHTML = `Latest run, ${studyDur(s)} on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} ${s.episodes === 1 ? "spread" : "spreads"}</b> cleared $0.50 after costs` +
+    (s.episodes ? `; the median one lived <b>${s.median_life_s} seconds</b>, and in ${s.pools_changed} of ${s.episodes} the pools traded while it stood` + (s.pools_changed * 2 >= s.episodes ? ", so other traders are already closing them." : ".") : ".");
   const max = Math.max(...s.hist.map((h) => h.n)), W = 100;
   $("studyhist").innerHTML = s.hist.map((h) => `<div class="hrow" tabindex="0" title="${h.n} ${h.n === 1 ? "spread" : "spreads"} lived ${h.label}"><span class="hl">${h.label}</span><span class="hb"><i style="width:${h.n / max * W}%"></i></span><span class="hn num">${h.n}</span></div>`).join("");
-  const fees = Object.entries(s.fees).sort((a, b) => a[1] - b[1]).map(([p, f]) => `${esc(p.replace("-", "/"))} ${f.toFixed(2)}`).join(", ");
+  $("studyrunswrap").style.display = runs.length < 2 ? "none" : "";
+  $("studyruns").innerHTML = runs.length < 2 ? "" : `<div class="tablewrap"><table class="mini"><thead><tr><th class="l">Run</th><th>Spreads</th><th>Median life</th><th class="hide-sm">Pools traded</th><th>Captured once each</th></tr></thead><tbody>` +
+    [...runs].reverse().map((r) => { const t = new Date(r.start * 1000); return `<tr><td class="l num">${t.toLocaleDateString([], { day: "numeric", month: "short" })} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}<span class="muted"> · ${studyDur(r)}</span></td><td class="num">${r.episodes}</td><td class="num">${r.median_life_s == null ? "–" : r.median_life_s + " s"}</td><td class="num hide-sm">${r.pools_changed} of ${r.episodes}</td><td class="num">$${r.capture_usd.toFixed(2)}</td></tr>`; }).join("") + "</tbody></table></div>";
+  const fees = Object.entries(STUDY.fees).sort((a, b) => a[1] - b[1]).map(([p, f]) => `${esc(p.replace("-", "/"))} ${f.toFixed(2)}`).join(", ");
   $("studystats").innerHTML = `
-    <div class="srow"><span>Captured once each, no competition</span><b class="num">$${s.capture_usd.toFixed(2)} in ${hrs.toFixed(0)} h</b></div>
-    <div class="srow"><span>Median spread, after costs</span><b class="num">+$${s.median_net.toFixed(2)} at $${s.median_size}</b></div>
-    <div class="srow"><span>Best route at a typical moment</span><b class="num">+$${s.typical_best_net.toFixed(2)}</b></div>
+    <div class="srow"><span>Captured once each, no competition</span><b class="num">$${s.capture_usd.toFixed(2)} in ${studyDur(s)}</b></div>
+    <div class="srow"><span>Median spread, after costs</span><b class="num">${s.median_net == null ? "–" : `+$${s.median_net.toFixed(2)} at $${s.median_size}`}</b></div>
+    <div class="srow"><span>Best route at a typical moment</span><b class="num">${s.typical_best_net >= 0 ? "+" : "-"}$${Math.abs(s.typical_best_net).toFixed(2)}</b></div>
     <div class="srow"><span>Moments with any route above $0.50</span><b class="num">${Math.round(s.share_any_clearing * 100)}%</b></div>
     <div class="srow"><span>Stablecoin spreads</span><b class="num">${s.stable_episodes}</b></div>
-    <p class="sub" style="margin:12px 0 0">Cantex network fee, measured from ${s.fee_quotes} quotes: median ${s.fee_median.toFixed(2)} CC a swap (${fees}). Largest spread: ${esc(s.top[0].token)}, ${V[s.top[0].buy]} → ${V[s.top[0].sell]}, +$${s.top[0].net.toFixed(2)} at $${s.top[0].size.toLocaleString("en-US")}, gone in ${s.top[0].life_s} seconds. Two non-atomic swaps per trip and capital on several venues are not priced here.</p>`;
+    <p class="sub" style="margin:12px 0 0">Cantex network fee: 0.86 CC a swap, the median of 96 quotes measured on 3 Oct 2026 (${fees}). ${s.top.length ? `Largest spread:` : ""} ${s.top.length ? `${esc(s.top[0].token)}, ${V[s.top[0].buy]} → ${V[s.top[0].sell]}, +$${s.top[0].net.toFixed(2)} at $${s.top[0].size.toLocaleString("en-US")}, gone in ${s.top[0].life_s} seconds.` : ""} Two non-atomic swaps per trip and capital on several venues are not priced here.</p>`;
 }
 
 /* ---------- pools ---------- */
@@ -904,7 +912,7 @@ function renderAPI() {
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
-    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
+    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;

@@ -237,3 +237,17 @@ def test_router_compares_with_the_runner_up_not_the_worst():
              "thin": cantex_pool("USDCx", 16_000, 1_960)}
     fill = m.route_order(pools, "sell", 1000, Decimal("0.1225"), Decimal("0.1225"))
     assert fill["other"] != "thin"
+
+
+def test_spread_study_counts_one_episode_per_standing_spread():
+    import spread_study as ss
+    k = "X:cantex>tradecraft"
+    samples = [{"t": 0, "routes": [(k, 0.2, 100, "a")]},
+               {"t": 20, "routes": [(k, 0.9, 300, "a")]},
+               {"t": 40, "routes": [(k, 0.7, 300, "b")]},   # still open; the pools traded
+               {"t": 60, "routes": [(k, 0.1, 100, "c")]},   # closed
+               {"t": 80, "routes": [("USDCX:tradecraft>cantex", 2.0, 900, "d")]}]
+    run = ss.summarize(samples, 20)
+    assert run["episodes"] == 2 and run["pools_changed"] == 1 and run["stable_episodes"] == 1
+    assert run["capture_usd"] == 2.9  # each spread taken once, at its best
+    assert sorted(t["life_s"] for t in run["top"]) == [20, 40]

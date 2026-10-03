@@ -1,0 +1,13 @@
+[Unit]
+Description=Canton Venues spread study: one hour of 20-second snapshots, once a day (read-only, no keys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/canton-venues/.venv/bin/python spread_study.py --out /var/www/canton-venues --duration 3600 --interval 20
+TimeoutStartSec=5400
+MemoryMax=300M
+CPUQuota=25%

@@ -23,7 +23,8 @@ ssh "$SERVER" "
   .venv/bin/pip install -q --upgrade \"./releases/$SHA[venues]\"
   ln -sfn releases/$SHA current
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png /var/www/canton-venues/
-  install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service /etc/systemd/system/
+  install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service \
+    current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer /etc/systemd/system/
   # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
   if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then
     install -m 644 current/examples/canton_venues/deploy/nginx.conf /etc/nginx/sites-available/canton-venues
@@ -34,6 +35,8 @@ ssh "$SERVER" "
   fi
   systemctl daemon-reload
   systemctl enable canton-venues canton-venues-mcp >/dev/null 2>&1
+  # the study timer is enabled once and never restarted here: it only writes spreads.json
+  systemctl is-enabled canton-venues-study.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-study.timer
   systemctl restart canton-venues canton-venues-mcp
   sleep 3
   systemctl is-active canton-venues canton-venues-mcp
