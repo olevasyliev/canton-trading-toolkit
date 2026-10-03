@@ -165,6 +165,16 @@ tbody tr:hover td { background: var(--bg-2); }
 .panel h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
 .panel .sub { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 
+/* spread study */
+.hrow { display: grid; grid-template-columns: 7.5em 1fr 2.5em; gap: 10px; align-items: center; padding: 6px 0; border-radius: 6px; }
+.hrow:hover, .hrow:focus { background: var(--bg-2); outline: none; }
+.hrow .hl { font-size: 13px; color: var(--text-2); }
+.hrow .hb { height: 14px; }
+.hrow .hb i { display: block; height: 100%; min-width: 2px; background: var(--accent); border-radius: 0 4px 4px 0; }
+.hrow .hn { text-align: right; font-weight: 600; }
+.srow { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.srow span { color: var(--text-2); }
+
 /* venues */
 .vbar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 2px 0 8px; }
 .vbar i { display: block; height: 100%; }
@@ -286,7 +296,7 @@ body:not(.tv) #tokenview { display: none; }
       Canton Venues
     </a>
     <nav class="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#study">Spreads</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
     </nav>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
   </div>
@@ -358,6 +368,15 @@ body:not(.tv) #tokenview { display: none; }
     <div class="grid2">
       <div class="panel" id="router"></div>
       <div class="panel" id="arb"></div>
+    </div>
+  </section>
+
+  <section class="block" id="study">
+    <h2>How fast spreads close</h2>
+    <p class="sub" id="studylead"></p>
+    <div class="grid2">
+      <div class="panel"><h3>How long a spread lives</h3><p class="sub">Spreads clearing $0.50 after costs, by lifetime. Snapshots every 20 seconds, so the first bar means gone by the next one or two.</p><div id="studyhist"></div></div>
+      <div class="panel"><h3>What it adds up to</h3><div id="studystats"></div></div>
     </div>
   </section>
 
@@ -837,14 +856,34 @@ function renderDesk() {
       <div class="split">${shares.map(([v, c]) => `<i style="width:${c / n * 100}%;background:${VC[v]}"></i>`).join("")}</div>
       <div class="splitkey">${shares.map(([v, c]) => `<span>${V[v]} ${Math.round(c / n * 100)}%</span>`).join("")}</div>
       <table class="mini"><tbody>${(r.fills || []).slice(-5).reverse().map((f) => `<tr><td class="l num muted">${hm(f.t)}</td><td class="l">${f.side === "sell" ? "Sell" : "Buy"} CC</td><td class="l" style="color:${VC[f.venue]};font-weight:600">${V[f.venue]}</td><td class="num up">+${(f.edge_bps / 100).toFixed(2)}%</td></tr>`).join("")}</tbody></table>
-      <p class="sub" style="margin:12px 0 0">Paper: priced off live pool state. Pools never move, network fees are not deducted, and the gap is measured against the worse venue, so it is a choice worth making, not profit.</p>`;
+      <p class="sub" style="margin:12px 0 0">Paper: priced off live pool state. Pools never move, network fees are not deducted, and the gap is measured against the next-best venue, so it is a choice worth making, not profit.</p>`;
   }
   const routes = (D.scan?.routes || []).slice(0, 5), trades = a.trades || [];
-  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs of 1.5 CC per swap (a pool-to-pool trip is two swaps, a trip through an order book three), and only above $0.50.</p>
-    <div class="kpi num ${a.pnl_usd > 0 ? "up" : ""}">${a.pnl_usd > 0 ? "+" : ""}$${(a.pnl_usd || 0).toFixed(2)}<small>${trades.length} ${trades.length === 1 ? "trade" : "trades"} since ${a.since ? new Date(a.since * 1000).toLocaleDateString([], { day: "numeric", month: "short" }) : "start"}</small></div>
+  const d24 = a.last_24h || {};
+  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs (Cantex 0.86 CC a swap, measured; OneSwap $1.75, as it states; others 1.5 CC, assumed), and only above $0.50. Each spread is booked once, when it opens.</p>
+    <div class="kpi num">${d24.trips || 0}<small>${d24.trips === 1 ? "trip" : "trips"} in the last 24 hours${d24.median_net_usd != null ? `, median +$${d24.median_net_usd.toFixed(2)} a trip` : ""}</small></div>
+    <p class="sub" style="margin:0 0 10px">Paper, and with no one competing for the spread. The study below shows other traders close most spreads within a minute or two.</p>
     ${trades.length ? `<table class="mini"><tbody>${trades.slice(-4).reverse().map((t) => `<tr><td class="l num muted">${hm(t.t)}</td><td class="l">${esc(t.token)}</td><td class="l">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num up">+$${t.net_usd.toFixed(2)}</td></tr>`).join("")}</tbody></table>` : ""}
     <p class="sub" style="margin:14px 0 0">Closest to clearing now, after costs</p>
     <table class="mini"><tbody>${routes.map((t) => `<tr><td class="l"><b>${esc(t.token)}</b></td><td class="l muted">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num muted">${usdSize(t.size_usd)}</td><td class="num ${t.net_usd >= 0 ? "up" : "down"}">${t.net_usd >= 0 ? "+" : "-"}$${Math.abs(t.net_usd).toFixed(2)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+/* ---------- spread study (one measured run, fixed data) ---------- */
+const STUDY = {"start": 1791038134, "end": 1791045315, "interval_s": 20, "samples": 360, "episodes": 19, "median_life_s": 60, "gone_fast": 6, "pools_changed": 12, "typical_best_net": 0.41, "share_any_clearing": 0.34, "capture_usd": 34.17, "median_net": 0.78, "median_size": 306, "stable_episodes": 1, "hist": [{"label": "under 40 s", "n": 6}, {"label": "40-80 s", "n": 5}, {"label": "80-160 s", "n": 4}, {"label": "160 s-10 min", "n": 2}, {"label": "over 10 min", "n": 2}], "fees": {"CC-USDCX": 1.2, "CBTC-CC": 0.824, "EDELX-CC": 0.667, "FRXUSD.B-CC": 1.091}, "fee_median": 0.864, "fee_quotes": 96, "top": [{"token": "USDCX", "buy": "tradecraft", "sell": "cantex", "life_s": 80, "net": 10.09, "size": 1266}, {"token": "CBTC", "buy": "cantex", "sell": "rocky", "life_s": 80, "net": 6.08, "size": 727}, {"token": "CBTC", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.36, "size": 384}, {"token": "CETH", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.23, "size": 459}, {"token": "CETH", "buy": "cantex", "sell": "rocky", "life_s": 20, "net": 2.08, "size": 386}]};
+function renderStudy() {
+  const s = STUDY, d = new Date(s.start * 1000), hrs = (s.end - s.start) / 3600;
+  const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  $("studylead").innerHTML = `A ${hrs.toFixed(0)}-hour measurement on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} spreads</b> cleared $0.50 after costs; the median one lived <b>${s.median_life_s} seconds</b>, and in ${s.pools_changed} of ${s.episodes} the pools traded while it stood, so other traders are already closing them.`;
+  const max = Math.max(...s.hist.map((h) => h.n)), W = 100;
+  $("studyhist").innerHTML = s.hist.map((h) => `<div class="hrow" tabindex="0" title="${h.n} ${h.n === 1 ? "spread" : "spreads"} lived ${h.label}"><span class="hl">${h.label}</span><span class="hb"><i style="width:${h.n / max * W}%"></i></span><span class="hn num">${h.n}</span></div>`).join("");
+  const fees = Object.entries(s.fees).sort((a, b) => a[1] - b[1]).map(([p, f]) => `${esc(p.replace("-", "/"))} ${f.toFixed(2)}`).join(", ");
+  $("studystats").innerHTML = `
+    <div class="srow"><span>Captured once each, no competition</span><b class="num">$${s.capture_usd.toFixed(2)} in ${hrs.toFixed(0)} h</b></div>
+    <div class="srow"><span>Median spread, after costs</span><b class="num">+$${s.median_net.toFixed(2)} at $${s.median_size}</b></div>
+    <div class="srow"><span>Best route at a typical moment</span><b class="num">+$${s.typical_best_net.toFixed(2)}</b></div>
+    <div class="srow"><span>Moments with any route above $0.50</span><b class="num">${Math.round(s.share_any_clearing * 100)}%</b></div>
+    <div class="srow"><span>Stablecoin spreads</span><b class="num">${s.stable_episodes}</b></div>
+    <p class="sub" style="margin:12px 0 0">Cantex network fee, measured from ${s.fee_quotes} quotes: median ${s.fee_median.toFixed(2)} CC a swap (${fees}). Largest spread: ${esc(s.top[0].token)}, ${V[s.top[0].buy]} → ${V[s.top[0].sell]}, +$${s.top[0].net.toFixed(2)} at $${s.top[0].size.toLocaleString("en-US")}, gone in ${s.top[0].life_s} seconds. Two non-atomic swaps per trip and capital on several venues are not priced here.</p>`;
 }
 
 /* ---------- pools ---------- */
@@ -894,6 +933,7 @@ function render() {
   renderAlerts();
   if (D.execution) renderExecution();
   renderDesk();
+  renderStudy();
   if (D.lp) renderLP();
   renderAPI();
   route();

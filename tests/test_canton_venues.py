@@ -80,7 +80,8 @@ def test_scan_deducts_the_network_cost_before_a_route_clears():
                   "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}}
     routes = m.scan(flat, Decimal("0.12"))
     assert routes and not any(r["clears"] for r in routes)
-    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - 3) for r in routes)
+    # one swap on each venue: Cantex at its measured 0.86 CC, Tradecraft at the 1.5 CC assumption
+    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - 2.36) for r in routes)
 
     skew = {"X": {"cantex": cantex_pool("X", 1_000_000, 1_000_000),
                   "tradecraft": tc_pool("X", 1_000_000, 900_000)}}
@@ -219,12 +220,14 @@ def test_usd_scan_only_adds_trips_that_touch_the_book():
     rows = m.usd_scan("X", routes, Decimal("0.122"))
     assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
-    # a pool route is two swaps, the book one: three swaps a trip
-    assert all(r["cost_cc"] == 4.5 for r in rows)
+    # a pool route is two swaps (its CC/USDCx leg costed as Cantex), the book one: three a trip
+    cost = {frozenset(("cantex", "rocky")): 0.86 * 2 + 1.5, frozenset(("tradecraft", "rocky")): 1.5 + 0.86 + 1.5}
+    assert all(r["cost_cc"] == pytest.approx(cost[frozenset((r["buy_on"], r["sell_on"]))]) for r in rows)
 
 
 def test_swap_cost_uses_a_venues_own_stated_fee():
-    assert m.swap_cost_cc("cantex", Decimal("0.125")) == Decimal("1.5")
+    assert m.swap_cost_cc("cantex", Decimal("0.125")) == Decimal("0.86")  # measured
+    assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("1.5")  # assumed
     assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal(14)  # $1.75 at $0.125
 
 

@@ -239,12 +239,19 @@ SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
 # Venues that state their own per-swap network fee, in dollars. OneSwap's docs: "typically around
 # $1.5-2 at recent network prices"; the midpoint is used.
 SWAP_COST_USD = {"oneswap": Decimal("1.75")}
+# Measured per-swap network fee in CC. Cantex: median of 96 authenticated quotes over two hours on
+# 2026-10-03 (0.67 EDELx to 1.20 CC/USDCx). Venues missing here keep the SWAP_COST_CC assumption.
+SWAP_COST_CC_MEASURED = {"cantex": Decimal("0.86")}
+# The CC/USDCx leg of a dollar route is costed as a Cantex swap (its deepest stable pool).
+STABLE_LEG_VENUE = "cantex"
 
 
 def swap_cost_cc(venue: str, cc_in_usd: Decimal) -> Decimal:
     """Network cost of one swap on ``venue``, in CC."""
     usd = SWAP_COST_USD.get(venue)
-    return usd / cc_in_usd if usd is not None else SWAP_COST_CC
+    if usd is not None:
+        return usd / cc_in_usd
+    return SWAP_COST_CC_MEASURED.get(venue, SWAP_COST_CC)
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
 BOOK_TAKER_FEE = {"rocky": Decimal("0.00025")}
@@ -393,7 +400,8 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
             x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
             # a pool route is the CC/USDCx leg (taken at the default cost) plus the venue's own swap
-            cost_cc = sum(swap_cost_cc(v, cc_in_usd) + (SWAP_COST_CC if routes.swaps(v) == 2 else 0)
+            stable_leg = swap_cost_cc(STABLE_LEG_VENUE, cc_in_usd)
+            cost_cc = sum(swap_cost_cc(v, cc_in_usd) + (stable_leg if routes.swaps(v) == 2 else 0)
                           for v in (buy, sell))
             net_usd = g - cost_cc * cc_in_usd
             fp = "|".join(routes.book.fingerprint() if v == routes.book.venue else fingerprint(routes.pools[v])

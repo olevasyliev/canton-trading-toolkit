@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import statistics
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -130,7 +131,7 @@ class Collector:
         self.history = load_json(self.api / "history.json", {"t": [], "usd": {}, "premium": {}})
         self.desk = load_json(self.api / "desk.json", {})
         self.desk.setdefault("router", {"fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}})
-        self.desk.setdefault("arb", {"trades": [], "pnl_usd": 0.0, "seen": {}})
+        self.desk.setdefault("arb", {})
         self.desk.setdefault("pnl", [])
 
     async def start(self) -> None:
@@ -548,6 +549,8 @@ class Collector:
         write_json(self.api / "execution.json", {"t": now, "sizes_usd": list(m.SIZES_USD),
                                                   "pairs": execution})
         write_json(self.api / "scan.json", {"t": now, "round_trip_cost_cc": float(m.ROUND_TRIP_COST_CC),
+                                            "swap_cost_cc": {v: float(m.swap_cost_cc(v, cc_usd)) for v in
+                                                             ("cantex", "tradecraft", "oneswap", "poolparty", "rocky")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
@@ -793,20 +796,20 @@ class Collector:
             router.update(m.router_stats(router["fills"]))
 
         arb = self.desk["arb"]
-        for route in scan:
-            if not route["clears"]:
-                continue
-            fp = route.get("fp")
-            if fp is None:
-                pair = books[route["token"]]
-                fp = m.fingerprint(pair[route["buy_on"]], pair[route["sell_on"]])
-            k = f'{route["token"]}:{route["buy_on"]}>{route["sell_on"]}'
-            if arb["seen"].get(k) == fp:
-                continue  # the same standing spread; booked when it first appeared
-            arb["seen"][k] = fp
+        if arb.get("v") != 2:
+            # v1 re-booked a standing spread whenever either pool moved at all, so one spread could
+            # be counted several times; the record restarts with one booking per spread
+            arb = self.desk["arb"] = {"v": 2, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
+        clearing = {f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}': r for r in scan if r["clears"]}
+        for k, route in clearing.items():
+            if k in arb["open"]:
+                continue  # still the same spread as last tick; booked once, when it opened
             arb["pnl_usd"] = round(arb["pnl_usd"] + route["net_usd"], 4)
             arb["trades"] = (arb["trades"] + [{**route, "t": now}])[-DESK_KEEP:]
-        arb.setdefault("since", now)
+        arb["open"] = sorted(clearing)
+        day = [t["net_usd"] for t in arb["trades"] if t["t"] >= now - 86400]
+        arb["last_24h"] = {"trips": len(day), "net_usd": round(sum(day), 2),
+                           "median_net_usd": round(statistics.median(day), 2) if day else None}
         self.desk["pnl"] = (self.desk["pnl"] + [[now, round(router["extra_usd"], 4),
                                                  round(arb["pnl_usd"], 4)]])[-2400:]
 
