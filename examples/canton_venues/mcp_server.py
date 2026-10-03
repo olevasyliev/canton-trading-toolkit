@@ -219,13 +219,30 @@ def alerts(limit: int = 20) -> dict:
 
 @server.tool(title="Liquidity pools")
 def pools(sort_by: str = "tvl", limit: int = 20) -> dict:
-    """Pools on Cantex and Tradecraft with liquidity, 24h volume, fee and LP fee APR from the last
+    """AMM pools on Cantex and Tradecraft with liquidity, 24h volume, fee and LP fee APR from the last
     24 hours of volume. sort_by: tvl, volume or apr."""
     k = {"tvl": "tvl_usd", "volume": "volume_24h_usd", "apr": "fee_apr"}.get(sort_by)
     if k is None:
         raise ToolError("sort_by must be tvl, volume or apr")
     rows = sorted(load("lp")["pools"], key=lambda r: -(r.get(k) or 0))
     return {"as_of": load("lp")["t"], "pools": rows[:max(1, min(limit, 60))]}
+
+
+@server.tool(title="Canton venues and coverage")
+def venues() -> dict:
+    """Every Canton trading venue we know of: type, 24h volume, and whether we price it live,
+    see its volume only, or cannot read it (key needed, testnet, no public API). Also the share of
+    Canton spot DEX volume that these prices cover."""
+    return load("venues")
+
+
+@server.tool(title="Perpetual futures")
+def perps(base: str | None = None) -> dict:
+    """Perp markets on Rocky and Ekiden: price, basis to the outside spot price, funding, spread,
+    open interest and 24h volume. base filters by asset, e.g. BTC, ETH or CC."""
+    d = load("perps")
+    rows = [x for x in d["markets"] if base is None or x["base"].upper() == base.upper()]
+    return {"as_of": d["t"], "markets": rows}
 
 
 def main() -> None:

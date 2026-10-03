@@ -6,7 +6,7 @@ public market-data surface, which is what this adapter covers. Trading needs an
 Ed25519-signed session and is not implemented here.
 
 Endpoint and payload shapes were verified against the live testnet gateway on
-2026-07-27; see SOURCES.md.
+2026-07-27 and against MainNet (the default) on 2026-10-03; see SOURCES.md.
 
 Venue-shape notes (vs the spot venues):
 
@@ -48,6 +48,9 @@ from ..core.models import (
 )
 from ..core.venue import MarketDataAdapter, VenueRequestError
 
+# MainNet opened 2026-09-08; Ekiden's docs list it as "Production". Its routes and payloads
+# match the testnet gateway's (checked 2026-10-03).
+MAINNET_BASE_URL = "https://api.ekiden.fi"
 TESTNET_BASE_URL = "https://api.cnt.ekiden.fi"
 STAGING_BASE_URL = "https://api.canton.ekiden.fi"
 BASE_URL_ENV = "EKIDEN_BASE_URL"
@@ -72,7 +75,7 @@ class EkidenAdapter(MarketDataAdapter):
         base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._base_url = (base_url or os.getenv(BASE_URL_ENV) or TESTNET_BASE_URL).rstrip("/")
+        self._base_url = (base_url or os.getenv(BASE_URL_ENV) or MAINNET_BASE_URL).rstrip("/")
         self._client = client
         self._info: dict | None = None
 

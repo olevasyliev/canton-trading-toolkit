@@ -161,3 +161,23 @@ def test_change_ignores_a_one_bar_wick_at_the_start_of_the_window():
     series = [(i * hour, 100.0) for i in range(20)] + [(20 * hour, 90.0)] + \
              [(i * hour, 100.0) for i in range(21, 44)] + [(44 * hour, 101.0)]
     assert m.change(series, 44 * hour, 24 * hour) == pytest.approx(0.01)
+
+
+def test_book_depth_counts_only_the_band_on_both_sides():
+    from canton_toolkit import BookLevel
+    bids = [BookLevel(Decimal("99.5"), Decimal(2)), BookLevel(Decimal("98"), Decimal(100))]
+    asks = [BookLevel(Decimal("100.5"), Decimal(1)), BookLevel(Decimal("102"), Decimal(100))]
+    # mid 100, 1% band: 99.5*2 + 100.5*1, the far levels left out, in a quote worth $1.01
+    assert m.book_depth_usd(bids, asks, Decimal(100), Decimal("1.01")) == Decimal("299.5") * Decimal("1.01")
+
+
+def test_weighted_price_follows_the_deeper_venue():
+    deep, thin = (Decimal(100), Decimal(9000)), (Decimal(110), Decimal(1000))
+    assert m.weighted_usd([deep, thin]) == Decimal(101)
+    assert m.weighted_usd([]) is None
+
+
+def test_amm_depth_is_about_half_a_percent_of_each_side():
+    pool = cantex_pool("USDCx", 1_000_000, 122_000)
+    depth = m.amm_depth_usd(pool, Decimal("0.122"))
+    assert float(depth) == pytest.approx(2 * 122_000 * 0.004988, rel=1e-3)

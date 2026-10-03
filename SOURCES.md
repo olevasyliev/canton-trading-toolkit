@@ -125,7 +125,10 @@ Perpetuals venue on Canton. No SDK is used: the gateway (`ekiden-gateway`,
 Rust/Axum) is called directly over HTTP. Shapes below were captured from live
 responses on the Canton testnet gateway `https://api.cnt.ekiden.fi` on
 2026-07-27, **not** from the published OpenAPI document — see the caveat at the
-bottom. Staging is `https://api.canton.ekiden.fi`; public WebSocket streams
+bottom. **MainNet** (`https://api.ekiden.fi`, the adapter's default since 2026-10-03,
+listed as "Production" at docs.ekiden.fi/api-reference/integration/configuration) serves
+the same routes and payloads; `/api/v1/info` there reports validator
+`canton-grpc.validator.cnm.ekiden.fi` and MainNet USDCx (`…12208115…`). Staging is `https://api.canton.ekiden.fi`; public WebSocket streams
 exist at `wss://api.cnt.ekiden.fi/ws/public` and are not consumed yet.
 
 Public market data needs no credentials. Trading requires an Ed25519-signed
@@ -302,3 +305,23 @@ that `/pools/state` does not carry, so it is not in `quote()`. The public
 `POST /v1/public/connect/quote` prices the Connect transfer-with-memo path
 instead (0.25% fee, 2 CC network fee that day), so it is not used as the API
 trader's price.
+
+---
+
+# Rocky adapter (`venues/rocky.py`) — read-only market data
+
+Spot and perpetual order books on Canton. Public REST, Binance-compatible, no key:
+`https://api.rocky.exchange/api/v3/*` (spot) and `/fapi/v1/*` (perps). Shapes below were
+captured from live MainNet responses on 2026-10-03. DefiLlama's Rocky adapter reads the same
+public routes.
+
+| Method | Route | Notes |
+|---|---|---|
+| `connect` / `markets` | `GET /exchangeInfo` | `symbols[]` with `PRICE_FILTER`, `LOT_SIZE`, `NOTIONAL` filters (spot); perps list `symbol`/`pair`/`baseAsset`/`quoteAsset` only |
+| `tickers` | `GET /ticker/24hr` | `lastPrice`, `volume` (base), `quoteVolume`; `bidPrice`/`askPrice` are always `"0"`, so top of book is not taken from here |
+| `order_book` | `GET /depth?symbol=&limit=` | `bids`/`asks` as `[price, qty]` strings; perps add `E`/`T` ms timestamps |
+| `recent_trades` | `GET /trades?symbol=&limit=` | `id` (UUID), `price`, `qty`, `time` ms, `isBuyerMaker` |
+| `funding_history` | `GET /fapi/v1/fundingRate` | answered 200 with an empty body on 2026-10-03 |
+
+Spot symbols on 2026-10-03: CBTC-USDCX, CBTC-USDCB, CETH-USDCB, CETH-CBTC. Perps: BTCUSDT,
+ETHUSDT, CCUSDT. `/fapi/v1/premiumIndex` was empty and `/fapi/v1/openInterest` returned `"0"`.

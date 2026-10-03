@@ -82,6 +82,36 @@ def token_usd(pools: list[VenuePool], cc_in_usd: Decimal) -> Decimal:
     return cc_in_usd / blended_mid(pools)
 
 
+# === order-book venues =====================================================
+
+DEPTH_BAND = Decimal("0.01")  # depth is what trades within 1% of a venue's own mid
+
+
+def book_depth_usd(bids, asks, mid: Decimal, quote_usd: Decimal, band: Decimal = DEPTH_BAND) -> Decimal:
+    """Dollars resting within ``band`` of mid on both sides of an order book."""
+    lo, hi = mid * (1 - band), mid * (1 + band)
+    total = sum((lv.price * lv.size for lv in bids if lv.price >= lo), Decimal(0))
+    total += sum((lv.price * lv.size for lv in asks if lv.price <= hi), Decimal(0))
+    return total * quote_usd
+
+
+def amm_depth_usd(pool: VenuePool, cc_in_usd: Decimal, band: Decimal = DEPTH_BAND) -> Decimal:
+    """The same measure for a constant-product pool, so AMMs and books weigh alike.
+
+    Moving an x*y=k price by ``band`` takes about R*(sqrt(1+band)-1) of a side worth R, each way.
+    """
+    side_usd = pool.cc_reserve * cc_in_usd
+    return 2 * side_usd * (Decimal(str(math.sqrt(1 + float(band)))) - 1)
+
+
+def weighted_usd(quotes: list[tuple[Decimal, Decimal]]) -> Decimal | None:
+    """One price across venues from (price, depth) pairs, weighted by depth within the band."""
+    depth = sum(d for _, d in quotes)
+    if depth <= 0:
+        return None
+    return sum(p * d for p, d in quotes) / depth
+
+
 def premium(canton_usd: Decimal, reference_usd: Decimal) -> Decimal | None:
     """Canton price over the outside price, as a fraction. None if implausible."""
     if reference_usd <= 0:

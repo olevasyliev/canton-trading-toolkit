@@ -3,6 +3,8 @@
 Sources, all public, no keys:
   Cantex      /v1/public REST + websocket candles   (CantexPublicData)
   Tradecraft  /v1 REST                               (TradecraftAdapter)
+  Rocky       spot and perp order books              (RockyAdapter)
+  Ekiden      MainNet perpetuals                     (EkidenAdapter)
   DefiLlama   Canton DEX volume and chain TVL        (ecosystem context)
   CoinGecko   outside prices for the premium board
 
@@ -31,7 +33,7 @@ import httpx
 import model as m
 from model import CC, VenuePool
 
-from canton_toolkit import CantexPublicData, TradecraftAdapter
+from canton_toolkit import CantexPublicData, EkidenAdapter, RockyAdapter, TradecraftAdapter
 
 log = logging.getLogger("venues")
 
@@ -46,6 +48,40 @@ GECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 # Cantex maps these to their underlying asset's CoinGecko id; that logo would
 # say they ARE that asset, so they get none.
 NO_LOGO = {"USX", "USDXLR"}
+# What a perp tracks outside Canton, for its basis. CoinGecko ids.
+PERP_SPOT = {"BTC": "bitcoin", "ETH": "ethereum", "CC": "canton-network", "XAU": "pax-gold",
+             "XAG": "kinesis-silver", "HYPE": "hyperliquid"}
+# Rocky quote asset (upper-cased; the venue mixes cases) -> our token key
+ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
+
+# Every Canton trading venue we know of and what we read from it (research 2026-10-03,
+# canton/docs/2026-10-03-venue-coverage-research.md in the private workspace). Volumes are
+# filled in live; "llama" names the DefiLlama protocol a volume comes from.
+VENUES = [
+    {"id": "temple", "name": "Temple", "kind": "Spot order book", "status": "volume",
+     "llama": "Temple", "note": "Prices and book need a key from the Temple team. Volume via DefiLlama."},
+    {"id": "cantex", "name": "Cantex", "kind": "Spot AMM", "status": "priced",
+     "note": "Reserves, volume and candles from the public API."},
+    {"id": "tradecraft", "name": "Tradecraft", "kind": "Spot AMM", "status": "priced",
+     "note": "Reserves and per-pool volume from the public API."},
+    {"id": "rocky", "name": "Rocky", "kind": "Spot order book", "status": "priced",
+     "note": "Order books and 24h tickers from the public API."},
+    {"id": "rocky_perp", "name": "Rocky perps", "kind": "Perpetuals", "status": "priced",
+     "note": "Order books and 24h tickers from the public API."},
+    {"id": "ekiden", "name": "Ekiden", "kind": "Perpetuals", "status": "priced",
+     "note": "MainNet tickers, mark, index and funding from the public API."},
+    {"id": "poolparty", "name": "Pool Party", "kind": "Spot AMM", "status": "volume",
+     "llama": "Pool Party", "note": "Public API; not priced yet. Volume via DefiLlama."},
+    {"id": "oneswap", "name": "OneSwap", "kind": "Spot AMM", "status": "next",
+     "note": "Public pool reserves; not connected yet. Volume not published."},
+    {"id": "canborsa", "name": "Canborsa", "kind": "Perpetuals", "status": "waiting",
+     "note": "Only the web app's internal API; a public API is on their Q4 roadmap."},
+    {"id": "silvana", "name": "Silvana", "kind": "Private order book", "status": "closed",
+     "note": "Prices need a KYC-onboarded account."},
+    {"id": "ibex", "name": "Ibex", "kind": "Perpetuals", "status": "testnet", "note": "Testnet only."},
+    {"id": "titan", "name": "Titan", "kind": "Perpetuals", "status": "testnet",
+     "note": "Testnet and a MainNet waitlist."},
+]
 
 
 def write_json(path: Path, data) -> None:
@@ -71,6 +107,10 @@ class Collector:
         self.api = out / "api" / "v1"
         self.cantex = CantexPublicData()
         self.tradecraft = TradecraftAdapter()
+        # order-book venues: optional, each fails alone and reconnects on a later tick
+        self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"),
+                         "ekiden": EkidenAdapter()}
+        self.live: set[str] = set()
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -87,6 +127,8 @@ class Collector:
     async def stop(self) -> None:
         await self.cantex.close()
         await self.tradecraft.close()
+        for a in self.optional.values():
+            await a.close()
         await self.http.aclose()
 
     # === sources ===========================================================
@@ -144,8 +186,145 @@ class Collector:
         except Exception as exc:  # noqa: BLE001
             log.warning("coingecko images: %s", exc)
 
+    async def _venue(self, name: str):
+        """An optional adapter, connected; None while its venue is unreachable."""
+        if name not in self.live:
+            try:
+                await self.optional[name].connect()
+                self.live.add(name)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s: connect: %s", name, exc)
+                await self.optional[name].close()
+                return None
+        return self.optional[name]
+
+    def _drop(self, name: str, exc: Exception) -> None:
+        log.warning("%s: %s", name, exc)
+        self.live.discard(name)
+
+    async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, float | None]:
+        """Rocky's deepest book per token, priced in dollars, and Rocky spot volume."""
+        rocky = await self._venue("rocky")
+        if rocky is None:
+            return {}, None
+        try:
+            tickers = {t.symbol: t for t in await rocky.tickers()}
+            markets = await rocky.markets()
+            quote_usd = {}
+            for q, k in ROCKY_QUOTES.items():
+                quote_usd[q] = usdcx_usd if k == USDCX else (
+                    m.token_usd(list(books[k].values()), cc_usd) if k in books else Decimal(1))
+            out: dict = {}
+            for mk in markets:  # price each token from its deepest dollar-quoted book
+                quote, k = m.key(mk.quote), m.key(mk.base)
+                if quote not in quote_usd or k not in books:
+                    continue
+                book = await rocky.order_book(mk.symbol, 100)
+                if book.mid_price is None:
+                    continue
+                depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote])
+                if k not in out or depth > out[k]["depth_usd"]:
+                    out[k] = {"symbol": mk.symbol, "price_usd": r(book.mid_price * quote_usd[quote], 8),
+                              "depth_usd": r(depth, 2),
+                              "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)}
+            volume = Decimal(0)
+            for mk in markets:  # volume over every book, a CBTC-quoted one through the CBTC price
+                t, quote, k = tickers.get(mk.symbol), m.key(mk.quote), m.key(mk.base)
+                q_usd = quote_usd.get(quote) or (Decimal(str(out[quote]["price_usd"])) if quote in out else None)
+                if not (t and q_usd):
+                    continue
+                volume += t.turnover_24h * q_usd
+                if k in out:
+                    out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
+            return out, float(volume)
+        except Exception as exc:  # noqa: BLE001
+            self._drop("rocky", exc)
+            return {}, None
+
+    async def _perps(self, gecko, cc_usd) -> list[dict]:
+        """Every perp market on Rocky and Ekiden, with its basis to the outside spot price."""
+        rows = []
+
+        def spot(base: str):
+            if base == "CC":
+                return float(cc_usd)
+            return gecko.get(PERP_SPOT.get(base, ""), {}).get("usd")
+
+        rocky = await self._venue("rocky_perp")
+        if rocky is not None:
+            try:
+                markets = {mk.symbol: mk for mk in await rocky.markets()}
+                for t in await rocky.tickers():
+                    mk = markets.get(t.symbol)
+                    if mk is None:
+                        continue
+                    book = await rocky.order_book(t.symbol, 20)
+                    bid, ask = book.best_bid, book.best_ask
+                    rows.append(self._perp_row("rocky_perp", t.symbol, mk.base, mk.quote, t.last_price,
+                                               None, None, None, None, t.turnover_24h, bid, ask,
+                                               spot(mk.base)))
+            except Exception as exc:  # noqa: BLE001
+                self._drop("rocky_perp", exc)
+        ekiden = await self._venue("ekiden")
+        if ekiden is not None:
+            try:
+                for t in await ekiden.tickers():
+                    base, _, quote = t.symbol.partition("-")
+                    rows.append(self._perp_row("ekiden", t.symbol, base, quote, t.last_price, t.mark_price,
+                                               t.index_price, t.funding_rate, t.open_interest * t.mark_price,
+                                               t.turnover_24h, t.best_bid, t.best_ask, spot(base)))
+            except Exception as exc:  # noqa: BLE001
+                self._drop("ekiden", exc)
+        return sorted(rows, key=lambda x: -(x["turnover_24h_usd"] or 0))
+
+    @staticmethod
+    def _perp_row(venue, symbol, base, quote, last, mark, index, funding, oi_usd, turnover,
+                  bid, ask, spot_usd) -> dict:
+        ref = mark if mark else last
+        return {
+            "venue": venue, "symbol": symbol, "base": base, "quote": quote,
+            "last": r(last, 8), "mark": r(mark, 8), "index": r(index, 8),
+            "spot_usd": r(spot_usd, 8),
+            "basis": r(float(ref) / spot_usd - 1, 6) if spot_usd and ref else None,
+            "funding_rate": r(funding, 8), "open_interest_usd": r(oi_usd, 2),
+            "turnover_24h_usd": r(turnover, 2),
+            "bid": r(bid.price, 8) if bid else None, "ask": r(ask.price, 8) if ask else None,
+            "spread_bps": r((ask.price / bid.price - 1) * 10_000, 2) if bid and ask else None,
+        }
+
+    def _prices(self, books, cc_usd, ob) -> dict[str, Decimal]:
+        """Each token's Canton price across every venue that prices it, weighted by depth."""
+        out = {}
+        for sym, pools in books.items():
+            quotes = [(cc_usd / p.mid, m.amm_depth_usd(p, cc_usd)) for p in pools.values()]
+            if sym in ob:
+                quotes.append((Decimal(str(ob[sym]["price_usd"])), Decimal(str(ob[sym]["depth_usd"]))))
+            out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
+        return out
+
+    def _venues(self, cx_volume_usd, rocky_spot_vol, perps, now) -> dict:
+        llama = {v["name"]: v["volume_24h"] for v in (self.slow.get("llama") or {}).get("venues", [])}
+        perp_vol: dict[str, float] = {}
+        for p in perps:
+            perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
+        own = {"cantex": cx_volume_usd, "tradecraft": sum(self.slow.get("tc_volume", {}).values()) or None,
+               "rocky": rocky_spot_vol, **perp_vol}
+        rows = []
+        for v in VENUES:
+            vol = own.get(v["id"]) if v["id"] in own else llama.get(v.get("llama"))
+            live = v["status"] != "priced" or v["id"] in ("cantex", "tradecraft") or v["id"] in self.live
+            rows.append({k: v[k] for k in ("id", "name", "kind", "note")} | {
+                "status": v["status"] if live else "down",
+                "volume_24h_usd": r(vol, 2) if vol is not None else None})
+        spot = [x for x in rows if x["kind"] != "Perpetuals" and x["volume_24h_usd"]]
+        total = sum(x["volume_24h_usd"] for x in spot)
+        priced = sum(x["volume_24h_usd"] for x in spot if x["status"] == "priced")
+        return {"t": now, "venues": rows, "spot_volume_24h_usd": r(total, 2),
+                "spot_priced_share": r(priced / total, 4) if total else None,
+                "perp_volume_24h_usd": r(sum(perp_vol.values()), 2)}
+
     async def _gecko(self) -> dict:
-        ids = sorted({g for g, _ in m.REFERENCES.values()} | {USDCX_GECKO})
+        ids = sorted({g for g, _ in m.REFERENCES.values()} | {USDCX_GECKO} | set(PERP_SPOT.values()))
         try:
             return await self._json(GECKO, {"ids": ",".join(ids), "vs_currencies": "usd",
                                             "include_24hr_change": "true"})
@@ -246,18 +425,23 @@ class Collector:
             raise RuntimeError("no CC/USDCx pool on any venue")
         cc_usd = m.cc_usd(list(stable.values()), usdcx_usd)
 
+        ob, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
+        perps = await self._perps(gecko, cc_usd)
+        prices = self._prices(books, cc_usd, ob)
+
         series = self._usd_series(now_ms, usdcx_usd)
-        self._record(now, cc_usd, books)
+        self._record(now, cc_usd, prices)
         own = self._own_series()
 
-        tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms)
-        premium = self._premium(books, cc_usd, gecko, tokens)
+        tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
+        premium = self._premium(books, cc_usd, gecko, ob, prices)
         execution = self._execution(books, cc_usd)
         scan = m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd)
         self._paper(books, cc_usd, scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
                                 time.monotonic() - started)
+        venues = self._venues(summary["cantex_24h"]["volume_usd"], rocky_spot_vol, perps, now)
 
         write_json(self.api / "summary.json", summary)
         write_json(self.api / "tokens.json", {"t": now, "tokens": tokens})
@@ -272,6 +456,8 @@ class Collector:
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()}})
         write_json(self.api / "history.json", self.history)
+        write_json(self.api / "venues.json", venues)
+        write_json(self.api / "perps.json", {"t": now, "markets": perps})
         await self._alerts(tokens, premium, scan, now)
         await self._daily(summary, tokens, premium)
         self.tick_no += 1
@@ -337,13 +523,13 @@ class Collector:
 
     # === sections ==========================================================
 
-    def _record(self, now: int, cc_usd: Decimal, books) -> None:
+    def _record(self, now: int, cc_usd: Decimal, prices) -> None:
         h = self.history
         h["t"].append(now)
         n = len(h["t"])
         usd = {CC: float(cc_usd)}
-        for sym, pools in books.items():
-            usd[sym] = float(m.token_usd(list(pools.values()), cc_usd))
+        for sym, price in prices.items():
+            usd[sym] = float(price)
         for sym in set(h["usd"]) | set(usd):
             col = h["usd"].setdefault(sym, [None] * (n - 1))
             col.append(r(usd.get(sym), 8))
@@ -360,7 +546,7 @@ class Collector:
         return {sym: [(t * 1000, v) for t, v in zip(h["t"], col) if v is not None]
                 for sym, col in h["usd"].items()}
 
-    def _tokens(self, books, cc_usd, tickers, series, own, now_ms) -> list[dict]:
+    def _tokens(self, books, cc_usd, tickers, series, own, now_ms, ob, prices) -> list[dict]:
         vol_cx: dict[str, float] = {}
         for t in tickers:
             base, target = m.key(t["base_currency"]), m.key(t["target_currency"])
@@ -371,12 +557,19 @@ class Collector:
         tc_vol = self.slow.get("tc_volume", {})
         out = []
         for sym, pools in books.items():
-            price = m.token_usd(list(pools.values()), cc_usd)
+            price = prices[sym]
             venues = {}
             for v, p in pools.items():
                 venues[v] = {"price_usd": r(cc_usd / p.mid, 8),
-                             "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2)}
+                             "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
+                             "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
             vol = vol_cx.get(sym, 0.0)
+            if sym in ob:
+                # a book's liquidity is what rests within 1% of mid, not a pool's full reserves
+                venues["rocky"] = {"price_usd": ob[sym]["price_usd"], "liquidity_usd": ob[sym]["depth_usd"],
+                                   "depth_1pct_usd": ob[sym]["depth_usd"], "market": ob[sym]["symbol"],
+                                   "spread_bps": ob[sym]["spread_bps"]}
+                vol += ob[sym]["volume_24h_usd"] or 0
             if "tradecraft" in pools:
                 vol += sum(v for k, v in tc_vol.items()
                            if k.upper().replace("TC ", "").replace(" LP", "") in
@@ -398,7 +591,7 @@ class Collector:
             })
         return sorted(out, key=lambda t: -(t["liquidity_usd"] or 0))
 
-    def _premium(self, books, cc_usd, gecko, tokens) -> list[dict]:
+    def _premium(self, books, cc_usd, gecko, ob, prices) -> list[dict]:
         rows = []
         h = self.history
         n = len(h["t"])
@@ -418,7 +611,7 @@ class Collector:
                 gid, label, ref, kind = None, "1.00 peg", 1.0, "peg"
             else:
                 continue
-            canton = cc_usd if sym == CC else m.token_usd(list(pools.values()), cc_usd)
+            canton = cc_usd if sym == CC else prices[sym]
             if ref is None:
                 rows.append({"key": sym, "kind": kind, "reference": label, "status": "no reference price"})
                 continue
@@ -428,6 +621,8 @@ class Collector:
                 for v, p in pools.items():
                     pv = m.premium(cc_usd / p.mid, Decimal(str(ref)))
                     per_venue[v] = r(pv, 6)
+            if sym in ob:
+                per_venue["rocky"] = r(m.premium(Decimal(str(ob[sym]["price_usd"])), Decimal(str(ref))), 6)
             keep(sym, prem)
             rows.append({
                 "key": sym,
@@ -536,7 +731,7 @@ class Collector:
             "ecosystem": self.slow.get("llama"),
             "tokens": len(books),
             "on_two_venues": sum(len(v) > 1 for v in books.values()),
-            "venues_priced": ["cantex", "tradecraft"],
+            "venues_priced": ["cantex", "tradecraft"] + sorted(self.live),
         }
 
 

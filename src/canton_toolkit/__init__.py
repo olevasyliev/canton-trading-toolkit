@@ -25,6 +25,7 @@ from .core.venue import (
 from .venues.cantex import CantexAdapter
 from .venues.cantex_public import CantexPublicData
 from .venues.ekiden import EkidenAdapter
+from .venues.rocky import RockyAdapter
 from .venues.dexref import (
     AllocationSwapRoute,
     DemoAllocationAuthorizer,
@@ -67,6 +68,7 @@ __all__ = [
     "HostedPartySwapRoute",
     "TradecraftAdapter",
     "PoolState",
+    "RockyAdapter",
     "LiquidityQuote",
     "swap_output",
     "swap_input",

@@ -37,6 +37,8 @@
   --down: #ea3943;
   --cantex: #f5a623;
   --trade: #3861fb;
+  --rocky: #12a594;
+  --ekiden: #8e4ec6;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #c5ccd6;
@@ -57,6 +59,8 @@
   --down: #ea3943;
   --cantex: #f5a623;
   --trade: #6188ff;
+  --rocky: #2ebfa5;
+  --ekiden: #a875e0;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #323546;
@@ -156,6 +160,17 @@ tbody tr:hover td { background: var(--bg-2); }
 .panel { border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; background: var(--card); box-shadow: var(--shadow); min-width: 0; }
 .panel h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
 .panel .sub { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
+
+/* venues */
+.vbar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 2px 0 8px; }
+.vbar i { display: block; height: 100%; }
+.vbar i.off { background: repeating-linear-gradient(135deg, var(--line-2) 0 4px, var(--bg-2) 4px 8px); }
+.vbarkey { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-2); margin-bottom: 14px; }
+.vbarkey i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.vst { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--bg-2); color: var(--text-2); white-space: nowrap; }
+.vst.priced { background: rgba(22, 199, 132, .12); color: var(--up); }
+.vst.down { background: rgba(234, 57, 67, .12); color: var(--down); }
+td.note { color: var(--text-2); font-size: 13px; white-space: normal; min-width: 16em; }
 
 /* premium bars */
 .prow { display: grid; grid-template-columns: 11em 1fr 5em; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -267,7 +282,7 @@ body:not(.tv) #tokenview { display: none; }
       Canton Venues
     </a>
     <nav class="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#premium">Premium</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
     </nav>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
   </div>
@@ -277,7 +292,7 @@ body:not(.tv) #tokenview { display: none; }
   <section id="tokenview" aria-live="polite"></section>
   <div class="title">
     <h1>Canton DEX prices today</h1>
-    <p id="headline">Every token on Canton's decentralised exchanges, priced live from the pools.</p>
+    <p id="headline">Every token on Canton's decentralised exchanges, priced live from the pools and order books.</p>
   </div>
 
   <div class="cards" id="cards"></div>
@@ -294,6 +309,12 @@ body:not(.tv) #tokenview { display: none; }
       <div class="seg" role="group" aria-label="Period"><button data-color="change_24h">24h</button><button data-color="change_7d">7d</button></div>
     </div>
     <div class="map" id="map" role="img" aria-label="Heatmap of Canton tokens"></div>
+  </section>
+
+  <section class="block" id="venues">
+    <h2>Venues</h2>
+    <p class="sub" id="venlead">Every Canton trading venue we know of, and what we can read from each.</p>
+    <div class="panel"><div id="venbar"></div><div class="tablewrap"><table id="ventable"></table></div></div>
   </section>
 
   <section class="block" id="premium">
@@ -318,6 +339,12 @@ body:not(.tv) #tokenview { display: none; }
       <div id="stage"></div>
       <div class="tablewrap"><table id="fills" style="margin-top:8px"></table></div>
     </div>
+  </section>
+
+  <section class="block" id="perps">
+    <h2>Perpetuals</h2>
+    <p class="sub">Every perp market on Rocky and Ekiden. Basis is the perp price over the outside spot price (CoinGecko; CC against its Canton price). Ekiden basis uses its mark price.</p>
+    <div class="panel"><div class="tablewrap"><table id="perptable"></table></div></div>
   </section>
 
   <section class="block" id="desk">
@@ -345,21 +372,21 @@ body:not(.tv) #tokenview { display: none; }
       <h3>For AI agents: MCP</h3>
       <p class="sub">Connect Claude or any MCP client to live Canton DEX data. Ask for quotes at any size, premiums, spreads or alerts in plain language. Read-only, no key.</p>
       <pre class="curl" style="margin-top:4px">https://cantonvenues.com/mcp</pre>
-      <p class="sub" style="margin:12px 0 0">Add it in Claude as a custom connector, or in any MCP client as a streamable HTTP server. Tools: market_overview, list_tokens, token, quote, premiums, spreads, alerts, pools. Try “where is CBTC cheapest for $20K right now?”</p>
+      <p class="sub" style="margin:12px 0 0">Add it in Claude as a custom connector, or in any MCP client as a streamable HTTP server. Tools: market_overview, list_tokens, token, quote, premiums, spreads, alerts, pools, venues, perps. Try “where is CBTC cheapest for $20K right now?”</p>
     </div>
   </section>
 
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built on <a href="https://github.com/olevasyliev/canton-trading-toolkit">canton_toolkit</a>, open source. Read-only: nothing here is signed or executed.</p><p id="updated"></p></div>
-    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id). Cantex and Tradecraft are priced from live reserves with each venue's own formula.</p></div>
-    <div><h4>Data</h4><p>Cantex and Tradecraft public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple and Rocky need a key and are not priced yet.</p></div>
+    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id). Cantex and Tradecraft are priced from live reserves with each venue's own formula, Rocky from its order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid. For an order book, liquidity is the dollars resting within 1% of mid.</p></div>
+    <div><h4>Data</h4><p>Cantex, Tradecraft, Rocky and Ekiden public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple, the largest venue, needs a key and is shown by volume only.</p></div>
   </footer>
 </main>
 
 <script>
 const API = "api/v1/";
-const V = { cantex: "Cantex", tradecraft: "Tradecraft" };
-const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)" };
+const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden" };
+const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)" };
 const S = { size: "liq", color: "change_24h", pair: "USDCX", side: "sell", sort: "liquidity_usd", dir: "desc", lpSort: "tvl_usd", lpAll: false };
 try { Object.assign(S, JSON.parse(localStorage.getItem("venues-view2") || "{}")); } catch (e) {}
 const D = {};
@@ -411,7 +438,7 @@ async function get(name) {
   return r.json();
 }
 async function load() {
-  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts"];
+  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts", "venues", "perps"];
   const got = await Promise.allSettled(names.map(get));
   got.forEach((g, i) => { if (g.status === "fulfilled") D[names[i]] = g.value; });
   if (!D.summary) { $("gstrip").textContent = "Market data is unavailable right now"; return; }
@@ -531,7 +558,7 @@ function renderPremium() {
       return `<div class="prow" data-prem="${esc(a.key)}"><span class="name">${icon(t, 22)}<span>${esc(a.symbol)}<br><span class="muted">${a.kind === "peg" ? "vs $1.00" : "vs " + esc(a.reference)}</span></span></span>
         <div class="bar"><span class="axis"></span><span class="fill" style="left:${Math.min(50, x)}%;width:${Math.abs(x - 50)}%;background:${a.premium >= 0 ? "var(--up)" : "var(--down)"}"></span>${dots}</div>
         <span class="val num ${tone(a.premium)}">${pct(a.premium)}</span></div>`;
-    }).join("")}<div class="key"><span><i style="background:var(--cantex)"></i>Cantex</span><span><i style="background:var(--trade)"></i>Tradecraft</span></div></div>`;
+    }).join("")}<div class="key">${[...new Set(list.flatMap((a) => Object.keys(a.premium_by_venue || {})))].sort().map((v) => `<span><i style="background:${VC[v]}"></i>${V[v]}</span>`).join("")}</div></div>`;
   };
   $("prem").innerHTML = group("Against an outside market", "BTC, ETH, gold, silver and stock tokens, priced on CoinGecko.", refs) +
     group("Stablecoins against $1.00", "The Canton price of each dollar token.", pegs);
@@ -595,6 +622,35 @@ function bindPremTip() {
   if (!window.__ptipDoc) { window.__ptipDoc = 1; document.addEventListener("click", hide); addEventListener("scroll", hide, { passive: true }); }
 }
 
+/* ---------- venues ---------- */
+const VST = { priced: "Priced", volume: "Volume only", next: "Next", waiting: "Waiting on API", closed: "Closed data", testnet: "Testnet", down: "Unreachable" };
+function renderVenues() {
+  const d = D.venues, rows = d.venues || [];
+  const spot = rows.filter((x) => x.kind !== "Perpetuals" && x.volume_24h_usd).sort((a, b) => b.volume_24h_usd - a.volume_24h_usd);
+  const total = d.spot_volume_24h_usd || 1, priced = rows.filter((x) => x.status === "priced").length;
+  $("venlead").innerHTML = `We read <b>${priced} of ${rows.length}</b> Canton venues live. They carry <b>${d.spot_priced_share == null ? "–" : Math.round(d.spot_priced_share * 100) + "%"}</b> of spot DEX volume (${money(d.spot_volume_24h_usd)} in 24h) plus ${money(d.perp_volume_24h_usd)} of perps.`;
+  $("venbar").innerHTML = `<p class="sub" style="margin:0 0 8px">Spot volume, last 24 hours. Hatched: volume we see but cannot price.</p>
+    <div class="vbar">${spot.map((x) => `<i class="${x.status === "priced" ? "" : "off"}" style="width:${x.volume_24h_usd / total * 100}%;${x.status === "priced" ? "background:" + (VC[x.id] || "var(--text-3)") : ""}" title="${esc(x.name)} ${money(x.volume_24h_usd)}"></i>`).join("")}</div>
+    <div class="vbarkey">${spot.map((x) => `<span>${x.status === "priced" ? `<i style="background:${VC[x.id]}"></i>` : `<i class="off" style="background:var(--line-2)"></i>`}${esc(x.name)} ${Math.round(x.volume_24h_usd / total * 100)}%</span>`).join("")}</div>`;
+  const order = { priced: 0, down: 1, volume: 2, next: 3, waiting: 4, closed: 5, testnet: 6 };
+  const sorted = [...rows].sort((a, b) => (order[a.status] - order[b.status]) || ((b.volume_24h_usd || 0) - (a.volume_24h_usd || 0)));
+  $("ventable").innerHTML = `<thead><tr><th class="l">Venue</th><th class="l hide-sm">Type</th><th>Volume (24h)</th><th class="l">Data</th><th class="l hide-sm">What we read</th></tr></thead><tbody>` +
+    sorted.map((x) => `<tr><td class="l"><b style="${VC[x.id] && x.status === "priced" ? "color:" + VC[x.id] : ""}">${esc(x.name)}</b></td><td class="l hide-sm muted">${esc(x.kind)}</td>
+      <td class="num">${x.volume_24h_usd == null ? "–" : money(x.volume_24h_usd)}</td><td class="l"><span class="vst ${x.status}">${VST[x.status] || esc(x.status)}</span></td><td class="l note hide-sm">${esc(x.note)}</td></tr>`).join("") + "</tbody>";
+}
+
+/* ---------- perps ---------- */
+function renderPerps() {
+  const rows = D.perps.markets || [];
+  const px = (v) => v == null ? "–" : price(v);
+  $("perptable").innerHTML = `<thead><tr><th class="l">Market</th><th class="l">Venue</th><th>Price</th><th>Basis</th><th class="hide-sm">Funding</th><th class="hide-sm">Spread</th><th class="hide-sm">Open interest</th><th>Volume (24h)</th></tr></thead><tbody>` +
+    rows.map((x) => `<tr><td class="l"><b>${esc(x.base)}</b><span class="muted"> / ${esc(x.quote)}</span></td><td class="l" style="color:${VC[x.venue]};font-weight:600">${V[x.venue] || esc(x.venue)}</td>
+      <td class="num">${px(x.mark || x.last)}</td><td class="num ${tone(x.basis)}">${pct(x.basis)}</td>
+      <td class="num hide-sm">${x.funding_rate == null ? "–" : pct(x.funding_rate, 4)}</td>
+      <td class="num hide-sm">${x.spread_bps == null ? "one-sided" : x.spread_bps < 1 ? "<0.01%" : (x.spread_bps / 100).toFixed(2) + "%"}</td>
+      <td class="num hide-sm">${x.open_interest_usd ? money(x.open_interest_usd) : "–"}</td><td class="num">${money(x.turnover_24h_usd || 0)}</td></tr>`).join("") + "</tbody>";
+}
+
 /* ---------- alerts ---------- */
 const KIND = { peg: "Peg", premium: "Premium", route: "Spread", move: "Move" };
 function renderAlerts() {
@@ -649,7 +705,7 @@ function renderToken() {
   const venues = Object.entries(t.venues);
   document.title = `${t.symbol} price on Canton DEXes · Canton Venues`;
   view.innerHTML = `<a class="tvback" href="#tokens">← All tokens</a>
-    <div class="tvhead">${icon(t, 36)}<h1>${esc(t.symbol)}</h1><span class="vchip">${venues.length === 2 ? "Cantex · Tradecraft" : V[venues[0][0]]}</span></div>
+    <div class="tvhead">${icon(t, 36)}<h1>${esc(t.symbol)}</h1><span class="vchip">${venues.map(([v]) => V[v] || v).join(" · ")}</span></div>
     <div class="tvprice"><span class="big num">${price(t.price_usd)}</span>${chg(t.change_24h)}<span class="muted">24h</span></div>
     <div class="stats">
       <div class="stat"><div class="k">7d change</div><div class="v">${chg(t.change_7d)}</div></div>
@@ -788,7 +844,8 @@ function renderAPI() {
   const eps = [["summary", "Ecosystem figures and Cantex 24h stats"], ["tokens", "Every token: price, liquidity, volume, change, 7d sparkline"],
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Both venues at four sizes, both directions"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
-    ["lp", "Pool liquidity, volume and fee APR"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
+    ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
+    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;
@@ -811,7 +868,9 @@ $("theme").addEventListener("click", () => {
 function render() {
   renderTop();
   if (D.tokens) { renderTable(); renderMap(); }
+  if (D.venues) renderVenues();
   if (D.premium) renderPremium();
+  if (D.perps) renderPerps();
   renderAlerts();
   if (D.execution) renderExecution();
   renderDesk();
