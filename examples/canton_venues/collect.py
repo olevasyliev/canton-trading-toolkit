@@ -202,11 +202,11 @@ class Collector:
         log.warning("%s: %s", name, exc)
         self.live.discard(name)
 
-    async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, float | None]:
-        """Rocky's deepest book per token, priced in dollars, and Rocky spot volume."""
+    async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, dict, float | None]:
+        """Rocky's deepest book per token: its dollar quote, the book itself, and Rocky spot volume."""
         rocky = await self._venue("rocky")
         if rocky is None:
-            return {}, None
+            return {}, {}, None
         try:
             tickers = {t.symbol: t for t in await rocky.tickers()}
             markets = await rocky.markets()
@@ -215,6 +215,7 @@ class Collector:
                 quote_usd[q] = usdcx_usd if k == USDCX else (
                     m.token_usd(list(books[k].values()), cc_usd) if k in books else Decimal(1))
             out: dict = {}
+            kept: dict = {}
             for mk in markets:  # price each token from its deepest dollar-quoted book
                 quote, k = m.key(mk.quote), m.key(mk.base)
                 if quote not in quote_usd or k not in books:
@@ -224,7 +225,12 @@ class Collector:
                     continue
                 depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote])
                 if k not in out or depth > out[k]["depth_usd"]:
-                    out[k] = {"symbol": mk.symbol, "price_usd": r(book.mid_price * quote_usd[quote], 8),
+                    kept[k] = m.BookVenue("rocky", mk.symbol,
+                                          tuple((lv.price, lv.size) for lv in book.bids),
+                                          tuple((lv.price, lv.size) for lv in book.asks),
+                                          quote_usd[quote], m.BOOK_TAKER_FEE["rocky"])
+                    out[k] = {"symbol": mk.symbol, "quote": ROCKY_QUOTES[quote],
+                              "price_usd": r(book.mid_price * quote_usd[quote], 8),
                               "depth_usd": r(depth, 2),
                               "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)}
             volume = Decimal(0)
@@ -236,10 +242,10 @@ class Collector:
                 volume += t.turnover_24h * q_usd
                 if k in out:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
-            return out, float(volume)
+            return out, kept, float(volume)
         except Exception as exc:  # noqa: BLE001
             self._drop("rocky", exc)
-            return {}, None
+            return {}, {}, None
 
     async def _perps(self, gecko, cc_usd) -> list[dict]:
         """Every perp market on Rocky and Ekiden, with its basis to the outside spot price."""
@@ -425,7 +431,7 @@ class Collector:
             raise RuntimeError("no CC/USDCx pool on any venue")
         cc_usd = m.cc_usd(list(stable.values()), usdcx_usd)
 
-        ob, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
+        ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
         perps = await self._perps(gecko, cc_usd)
         prices = self._prices(books, cc_usd, ob)
 
@@ -435,8 +441,14 @@ class Collector:
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
         premium = self._premium(books, cc_usd, gecko, ob, prices)
-        execution = self._execution(books, cc_usd)
+        dollar = {k: m.DollarRoutes(books[k], stable, b, usdcx_usd) for k, b in ob_books.items()}
+        cc_pairs = self._execution(books, cc_usd)
+        # CC/USDCx stays the default view; order-book tokens in dollars come right after it
+        execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices) + cc_pairs[1:]
         scan = m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd)
+        for k, routes in dollar.items():
+            scan += m.usd_scan(k, routes, cc_usd)
+        scan.sort(key=lambda x: -x["net_usd"])
         self._paper(books, cc_usd, scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
@@ -454,7 +466,8 @@ class Collector:
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
-            "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()}})
+            "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
+            "books": {k: m.book_to_json(b, ob[k]["quote"]) for k, b in ob_books.items()}})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
@@ -649,6 +662,8 @@ class Collector:
             rows = m.ladder(pools, cc_usd, mid)
             out.append({
                 "key": sym,
+                "kind": "cc",
+                "venues": sorted(pools),
                 "symbol": next(iter(pools.values())).token,
                 "mid": {v: r(p.mid, 12) for v, p in pools.items()},
                 "rows": rows,
@@ -656,6 +671,20 @@ class Collector:
                                   for s in ("sell", "buy")},
             })
         return sorted(out, key=lambda p: (p["key"] != USDCX, p["key"]))
+
+    def _usd_execution(self, books, dollar, prices) -> list[dict]:
+        """Tokens that also trade on an order book: every venue against dollars."""
+        out = []
+        for sym, routes in sorted(dollar.items()):
+            rows = m.usd_ladder(routes, prices[sym])
+            out.append({
+                "key": sym + ":USD", "kind": "usd", "token": sym,
+                "symbol": next(iter(books[sym].values())).token,
+                "venues": routes.venues, "swaps": {v: routes.swaps(v) for v in routes.venues},
+                "book": routes.book.symbol, "book_fee": float(routes.book.fee),
+                "rows": rows,
+            })
+        return out
 
     def _paper(self, books, cc_usd, scan, now) -> None:
         router = self.desk["router"]
@@ -676,8 +705,10 @@ class Collector:
         for route in scan:
             if not route["clears"]:
                 continue
-            pair = books[route["token"]]
-            fp = m.fingerprint(pair[route["buy_on"]], pair[route["sell_on"]])
+            fp = route.get("fp")
+            if fp is None:
+                pair = books[route["token"]]
+                fp = m.fingerprint(pair[route["buy_on"]], pair[route["sell_on"]])
             k = f'{route["token"]}:{route["buy_on"]}>{route["sell_on"]}'
             if arb["seen"].get(k) == fp:
                 continue  # the same standing spread; booked when it first appeared

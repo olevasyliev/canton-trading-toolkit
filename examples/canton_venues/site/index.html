@@ -331,13 +331,14 @@ body:not(.tv) #tokenview { display: none; }
 
   <section class="block" id="execution">
     <h2>Best execution</h2>
-    <p class="sub">What each venue returns at four trade sizes, pool fees and price impact included, network fees excluded on both sides.</p>
+    <p class="sub">What each venue returns at four trade sizes. Tokens that also trade on an order book get a second view in dollars, with every venue on one chart.</p>
     <div class="panel">
       <div class="pills" id="pairs"></div>
       <div class="pills" id="sides"></div>
       <div class="verdict" id="verdict"></div>
       <div id="stage"></div>
       <div class="tablewrap"><table id="fills" style="margin-top:8px"></table></div>
+      <p class="sub" id="execnote" style="margin:12px 0 0"></p>
     </div>
   </section>
 
@@ -701,7 +702,8 @@ function renderToken() {
   const view = $("tokenview");
   if (!t) { view.innerHTML = `<a class="tvback" href="#tokens">← All tokens</a><p class="empty">Unknown token.</p>`; return; }
   const prem = premOf(key), pools = (D.lp?.pools || []).filter((r) => r.pair.toUpperCase() === ("CC/" + t.symbol).toUpperCase());
-  const onTwo = (D.execution?.pairs || []).some((p) => p.key === key);
+  const pairs = D.execution?.pairs || [];
+  const cmp = pairs.find((p) => p.key === key + ":USD") || pairs.find((p) => p.key === key);
   const venues = Object.entries(t.venues);
   document.title = `${t.symbol} price on Canton DEXes · Canton Venues`;
   view.innerHTML = `<a class="tvback" href="#tokens">← All tokens</a>
@@ -723,7 +725,7 @@ function renderToken() {
       ${venues.map(([v, x]) => `<tr><td class="l" style="color:${VC[v]};font-weight:700">${V[v]}</td><td class="num">${price(x.price_usd)}</td><td class="num">${money(x.liquidity_usd)}</td>${prem ? `<td class="num ${tone(prem.premium_by_venue?.[v])}">${pct(prem.premium_by_venue?.[v])}</td>` : ""}</tr>`).join("")}
       </tbody></table></div>
       ${pools.length ? `<p class="sub" style="margin:14px 0 4px">Pools</p><table class="mini"><tbody>${pools.map((r) => `<tr><td class="l">${esc(r.pair)} <span class="vchip">${V[r.venue]}</span></td><td class="num">${money(r.tvl_usd)} liquidity</td><td class="num">${money(r.volume_24h_usd)} 24h</td><td class="num">${r.fee_apr == null ? "–" : (r.fee_apr * 100).toFixed(1) + "% fee APR"}</td></tr>`).join("")}</tbody></table>` : ""}
-      ${onTwo ? `<p style="margin:14px 0 0"><a href="#execution" data-compare="${esc(key)}">Compare Cantex and Tradecraft for ${esc(t.symbol)} →</a></p>` : ""}
+      ${cmp ? `<p style="margin:14px 0 0"><a href="#execution" data-compare="${esc(cmp.key)}">Compare ${execVenues(cmp).map((v) => V[v]).join(", ").replace(/, ([^,]*)$/, " and $1")} for ${esc(t.symbol)} →</a></p>` : ""}
     </div>`;
   const step = t.history_source === "cantex candles" ? 3600000 : 300000, n = (t.spark_7d || []).length, end = D.tokens.t * 1000;
   lineChart("tvprice", (t.spark_7d || []).map((v, i) => [end - (n - 1 - i) * step, v]), (v) => price(v));
@@ -753,47 +755,59 @@ function costBps(pair, r, v) {
 }
 function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))); const n = raw / p; return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p; }
 function roundSize(v) { const p = Math.pow(10, Math.floor(Math.log10(v)) - 1); return Math.round(v / p) * p; }
+function execVenues(pair) { return pair.venues || ["cantex", "tradecraft"]; }
+function execCost(pair, r, v) { return r.cost_bps ? r.cost_bps[v] ?? null : costBps(pair, r, v); }
 function renderExecution() {
   const pair = execPair(); if (!pair) return;
   S.pair = pair.key;
-  $("pairs").innerHTML = D.execution.pairs.map((p) => `<button data-pair="${esc(p.key)}" aria-pressed="${p.key === pair.key}">CC/${esc(p.symbol)}</button>`).join("");
-  $("sides").innerHTML = [["sell", "Sell CC"], ["buy", "Buy CC"]].map(([k, l]) => `<button data-side="${k}" aria-pressed="${k === S.side}">${l}</button>`).join("");
+  const usd = pair.kind === "usd", vs = execVenues(pair), sym = esc(pair.symbol);
+  $("pairs").innerHTML = D.execution.pairs.map((p) => `<button data-pair="${esc(p.key)}" aria-pressed="${p.key === pair.key}">${p.kind === "usd" ? esc(p.symbol) + "/$" : "CC/" + esc(p.symbol)}</button>`).join("");
+  const sides = usd ? [["buy", `Buy ${sym}`], ["sell", `Sell ${sym}`]] : [["sell", "Sell CC"], ["buy", "Buy CC"]];
+  $("sides").innerHTML = sides.map(([k, l]) => `<button data-side="${k}" aria-pressed="${k === S.side}">${l}</button>`).join("");
   const rows = pair.rows.filter((r) => r.side === S.side);
-  const xs = (pair.crossover_usd || {})[S.side] || [];
-  const flow = S.side === "sell" ? `Selling CC for ${esc(pair.symbol)}` : `Buying CC with ${esc(pair.symbol)}`;
-  const cx = '<span class="cx">Cantex</span>', tc = '<span class="tc">Tradecraft</span>', first = rows[0].best;
-  $("verdict").innerHTML = !xs.length ? `${flow}: ${first === "cantex" ? cx : tc} fills better at every size from $100 to $50K.`
-    : xs.length === 1 ? `${flow}: ${first === "cantex" ? cx : tc} fills better up to ${usdSize(roundSize(xs[0]))}, ${first === "cantex" ? tc : cx} past that.`
-    : `${flow}: the better venue changes ${xs.length} times between $100 and $50K.`;
+  if (!rows.length) { $("verdict").textContent = "No venue can fill this side right now."; $("stage").innerHTML = ""; $("fills").innerHTML = ""; return; }
+  const xs = usd ? [] : (pair.crossover_usd || {})[S.side] || [];
+  const flow = usd ? (S.side === "buy" ? `Buying ${sym} with dollars` : `Selling ${sym} for dollars`)
+    : (S.side === "sell" ? `Selling CC for ${sym}` : `Buying CC with ${sym}`);
+  const vn = (v) => `<b style="color:${VC[v]}">${V[v]}</b>`;
+  const segs = [];
+  rows.forEach((r) => { const last = segs[segs.length - 1]; if (last && last.v === r.best) last.to = r.size_usd; else segs.push({ v: r.best, from: r.size_usd, to: r.size_usd }); });
+  const span = (g) => g.from === g.to ? usdSize(g.from) : `${usdSize(g.from)} to ${usdSize(g.to)}`;
+  $("verdict").innerHTML = segs.length === 1 ? `${flow}: ${vn(segs[0].v)} fills better at every size from ${usdSize(rows[0].size_usd)} to ${usdSize(rows[rows.length - 1].size_usd)}.`
+    : `${flow}: ` + segs.map((g) => `${vn(g.v)} at ${span(g)}`).join(", ") + ".";
   drawExec(pair, rows, xs);
-  const outU = S.side === "sell" ? pair.symbol : "CC", inU = S.side === "sell" ? "CC" : pair.symbol;
-  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th><th>Cantex returns</th><th>Tradecraft returns</th><th class="hide-sm">Better by</th></tr></thead><tbody>` +
-    rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b> <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span></td>
-      <td class="num" style="${r.best === "cantex" ? "color:var(--cantex);font-weight:700" : ""}">${amt(r.out.cantex)} ${esc(outU)}</td>
-      <td class="num" style="${r.best === "tradecraft" ? "color:var(--trade);font-weight:700" : ""}">${amt(r.out.tradecraft)} ${esc(outU)}</td>
+  const inU = usd ? (S.side === "buy" ? "$" : pair.symbol) : (S.side === "sell" ? "CC" : pair.symbol);
+  const outU = usd ? (S.side === "buy" ? pair.symbol : "$") : (S.side === "sell" ? pair.symbol : "CC");
+  const fmt = (v, u) => v == null ? '<span class="muted">book too thin</span>' : u === "$" ? money(v) : `${amt(v)} ${esc(u)}`;
+  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${usd && pair.swaps?.[v] === 2 ? '<span class="muted"> via CC</span>' : ""}</th>`).join("")}<th class="hide-sm">Better by</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b>${inU === "$" ? "" : ` <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span>`}</td>
+      ${vs.map((v) => `<td class="num" style="${r.best === v ? `color:${VC[v]};font-weight:700` : ""}">${fmt(r.out[v], outU)}</td>`).join("")}
       <td class="num hide-sm">${V[r.best]} +${(r.edge_bps / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
+  $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. Rocky is one order on its ${esc(pair.book)} book, with an assumed ${(pair.book_fee * 100).toFixed(3)}% taker fee (Rocky publishes no fee schedule). Cost is measured against the Canton price.`
+    : "Pool fees and price impact included, network fees excluded on both sides.";
 }
 function drawExec(pair, rows, xs) {
-  const st = $("stage"), W = Math.max(280, st.clientWidth), narrow = W < 560;
+  const st = $("stage"), W = Math.max(280, st.clientWidth), narrow = W < 560, vs = execVenues(pair);
   const H = narrow ? 240 : 300, L = 52, R = narrow ? 78 : 96, T = 14, B = 32;
-  const pts = { cantex: [], tradecraft: [] };
-  rows.forEach((r) => { for (const v of ["cantex", "tradecraft"]) { const c = costBps(pair, r, v); if (c != null && isFinite(c)) pts[v].push({ s: r.size_usd, c }); } });
-  const all = [...pts.cantex, ...pts.tradecraft].map((p) => p.c);
+  const pts = Object.fromEntries(vs.map((v) => [v, []]));
+  rows.forEach((r) => { for (const v of vs) { const c = execCost(pair, r, v); if (c != null && isFinite(c)) pts[v].push({ s: r.size_usd, c }); } });
+  const all = vs.flatMap((v) => pts[v].map((p) => p.c));
   let lo = Math.min(0, ...all), hi = Math.max(...all); const pad = (hi - lo) * 0.08 || 10; lo -= pad; hi += pad;
   const s0 = Math.log(rows[0].size_usd), s1 = Math.log(rows[rows.length - 1].size_usd);
-  const x = (s) => L + (Math.log(s) - s0) / (s1 - s0) * (W - L - R), y = (c) => T + (c - lo) / (hi - lo) * (H - T - B);
+  const x = (s) => L + (s1 === s0 ? 0.5 : (Math.log(s) - s0) / (s1 - s0)) * (W - L - R), y = (c) => T + (c - lo) / (hi - lo) * (H - T - B);
   const step = niceStep((hi - lo) / 5);
   let g = "";
   for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line class="g" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 10}" y="${y(v)}" text-anchor="end" dominant-baseline="central">${v > 0 ? "-" : ""}${(Math.abs(v) / 100).toFixed(step >= 100 ? 0 : 1)}%</text>`;
   rows.forEach((r) => { g += `<text x="${x(r.size_usd)}" y="${H - 8}" text-anchor="middle">${usdSize(r.size_usd)}</text>`; });
   let lines = "";
-  for (const v of ["tradecraft", "cantex"]) {
+  for (const v of [...vs].reverse()) {
     const p = pts[v]; if (!p.length) continue;
     lines += `<polyline class="curve" stroke="${VC[v]}" points="${p.map((q) => x(q.s) + "," + y(q.c)).join(" ")}"/>` +
       p.map((q) => `<circle class="dot" cx="${x(q.s)}" cy="${y(q.c)}" r="4.5" fill="${VC[v]}"><title>${V[v]}, ${usdSize(q.s)}: costs ${(q.c / 100).toFixed(2)}%</title></circle>`).join("");
   }
-  const ends = ["cantex", "tradecraft"].filter((v) => pts[v].length).map((v) => ({ v, yy: y(pts[v][pts[v].length - 1].c) }));
-  if (ends.length === 2 && Math.abs(ends[0].yy - ends[1].yy) < 16) { const m = (ends[0].yy + ends[1].yy) / 2, up = ends[0].yy <= ends[1].yy ? 0 : 1; ends[up].yy = m - 8; ends[1 - up].yy = m + 8; }
+  // end labels, nudged apart so they never overlap
+  const ends = vs.filter((v) => pts[v].length).map((v) => ({ v, yy: y(pts[v][pts[v].length - 1].c) })).sort((a, b) => a.yy - b.yy);
+  for (let k = 1; k < ends.length; k++) if (ends[k].yy - ends[k - 1].yy < 16) ends[k].yy = ends[k - 1].yy + 16;
   ends.forEach((e) => { lines += `<text class="end" x="${W - R + 12}" y="${e.yy}" dominant-baseline="central" style="fill:${VC[e.v]}">${V[e.v]}</text>`; });
   const cross = xs.map((c) => `<line class="cross" x1="${x(c)}" x2="${x(c)}" y1="${T}" y2="${H - B}"/><text x="${x(c) + 6}" y="${T + 10}">${usdSize(roundSize(c))}</text>`).join("");
   st.innerHTML = `<svg class="chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Trade cost by size on each venue">${g}${cross}${lines}</svg>`;
@@ -842,7 +856,7 @@ function renderLP() {
 /* ---------- api ---------- */
 function renderAPI() {
   const eps = [["summary", "Ecosystem figures and Cantex 24h stats"], ["tokens", "Every token: price, liquidity, volume, change, 7d sparkline"],
-    ["premium", "Canton price against outside markets and pegs"], ["execution", "Both venues at four sizes, both directions"],
+    ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
     ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];

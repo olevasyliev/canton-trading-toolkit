@@ -223,6 +223,171 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
     return sorted(found, key=lambda r: -r["net_usd"])
 
 
+# === order books against pools, in dollars ================================
+
+# Network cost of one swap on Canton, the same assumption as ROUND_TRIP_COST_CC (3 CC for two).
+SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
+# Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
+# is the source of truth. An assumption until the app or their docs say otherwise.
+BOOK_TAKER_FEE = {"rocky": Decimal("0.00025")}
+
+
+@dataclass(frozen=True)
+class BookVenue:
+    """One order book: base priced in a dollar token worth ``quote_usd``."""
+
+    venue: str
+    symbol: str
+    bids: tuple  # (price, size) descending
+    asks: tuple  # (price, size) ascending
+    quote_usd: Decimal
+    fee: Decimal
+
+    def sell_base(self, qty: Decimal) -> Decimal | None:
+        """Quote received for ``qty`` base, walking the bids; None if the book runs out."""
+        got, left = Decimal(0), qty
+        for price, size in self.bids:
+            take = min(left, size)
+            got += take * price
+            left -= take
+            if left <= 0:
+                return got * (1 - self.fee)
+        return None
+
+    def buy_base(self, quote: Decimal) -> Decimal | None:
+        """Base received for ``quote`` spent, walking the asks; None if the book runs out."""
+        got, left = Decimal(0), quote
+        for price, size in self.asks:
+            take = min(left, size * price)
+            got += take / price
+            left -= take
+            if left <= 0:
+                return got * (1 - self.fee)
+        return None
+
+    def fingerprint(self) -> str:
+        top = (self.bids[:1] + self.asks[:1])
+        return f"{self.venue}:" + ":".join(f"{p}x{q}" for p, q in top)
+
+
+def book_to_json(b: BookVenue, quote_key: str) -> dict:
+    return {"venue": b.venue, "symbol": b.symbol, "quote": quote_key, "quote_usd": float(b.quote_usd),
+            "fee": float(b.fee), "bids": [[str(p), str(q)] for p, q in b.bids],
+            "asks": [[str(p), str(q)] for p, q in b.asks]}
+
+
+def book_from_json(d: dict) -> BookVenue:
+    return BookVenue(d["venue"], d["symbol"], tuple((Decimal(p), Decimal(q)) for p, q in d["bids"]),
+                     tuple((Decimal(p), Decimal(q)) for p, q in d["asks"]),
+                     Decimal(str(d["quote_usd"])), Decimal(str(d["fee"])))
+
+
+class DollarRoutes:
+    """Buy or sell a token for dollars on each venue.
+
+    A pool route goes through CC: dollars (USDCx) to CC on the best CC/USDCx pool, then CC to the
+    token on that venue's pool, or back. A book route is one order. Every venue is asked about the
+    same dollar amount.
+    """
+
+    def __init__(self, pools: dict[str, VenuePool], stable: dict[str, VenuePool],
+                 book: BookVenue | None, usdcx_usd: Decimal) -> None:
+        self.pools, self.stable, self.book, self.usdcx_usd = pools, stable, book, usdcx_usd
+
+    @property
+    def venues(self) -> list[str]:
+        return sorted(self.pools) + ([self.book.venue] if self.book else [])
+
+    def swaps(self, venue: str) -> int:
+        return 1 if self.book and venue == self.book.venue else 2
+
+    def buy(self, venue: str, usd: Decimal) -> Decimal | None:
+        """Token received for ``usd`` dollars."""
+        if self.book and venue == self.book.venue:
+            return self.book.buy_base(usd / self.book.quote_usd)
+        _, cc, _ = best_leg(self.stable, False, usd / self.usdcx_usd)
+        return self.pools[venue].out(True, cc)
+
+    def sell(self, venue: str, qty: Decimal) -> Decimal | None:
+        """Dollars received for ``qty`` of the token."""
+        if self.book and venue == self.book.venue:
+            got = self.book.sell_base(qty)
+            return None if got is None else got * self.book.quote_usd
+        cc = self.pools[venue].out(False, qty)
+        _, usdcx, _ = best_leg(self.stable, True, cc)
+        return usdcx * self.usdcx_usd
+
+
+def usd_ladder(routes: DollarRoutes, price_usd: Decimal) -> list[dict]:
+    """What each venue returns at each dollar size: tokens when buying, dollars when selling."""
+    rows = []
+    for side in ("buy", "sell"):
+        for size in SIZES_USD:
+            usd = Decimal(size)
+            qty = usd / price_usd
+            outs = {v: (routes.buy(v, usd) if side == "buy" else routes.sell(v, qty)) for v in routes.venues}
+            filled = {v: o for v, o in outs.items() if o is not None and o > 0}
+            if not filled:
+                continue
+            best = max(filled, key=filled.get)
+            fair = qty if side == "buy" else usd  # what a trade at the Canton price would return
+            rows.append({
+                "side": side, "size_usd": size, "amount_in": float(usd if side == "buy" else qty),
+                "out": {v: (float(o) if o is not None else None) for v, o in outs.items()},
+                "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
+                "best": best,
+                "edge_bps": edge_bps(max(filled.values()), min(filled.values())) if len(filled) > 1 else 0.0,
+            })
+    return rows
+
+
+def usd_round_trip(routes: DollarRoutes, buy_on: str, sell_on: str, cc_in_usd: Decimal,
+                   lo_usd: float = 10, hi_usd: float = 100_000, steps: int = 60) -> tuple[Decimal, Decimal]:
+    """Dollars in and gross dollar gain at the best size: buy on one venue, sell on the other."""
+    def gain(x: Decimal) -> Decimal:
+        qty = routes.buy(buy_on, x)
+        back = routes.sell(sell_on, qty) if qty else None
+        return (back - x) if back is not None else Decimal(-10**12)
+
+    grid = [Decimal(lo_usd * (hi_usd / lo_usd) ** (i / (steps - 1))) for i in range(steps)]
+    gains = [gain(x) for x in grid]
+    i = max(range(steps), key=lambda k: gains[k])
+    a, b = grid[max(i - 1, 0)], grid[min(i + 1, steps - 1)]
+    phi = Decimal((math.sqrt(5) - 1) / 2)
+    for _ in range(40):
+        c, d = b - phi * (b - a), a + phi * (b - a)
+        if gain(c) > gain(d):
+            b = d
+        else:
+            a = c
+    x = (a + b) / 2
+    return x, gain(x)
+
+
+def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]:
+    """Round trips that touch an order book, in the same shape as ``scan`` rows."""
+    if not routes.book:
+        return []
+    found = []
+    for buy in routes.venues:
+        for sell in routes.venues:
+            if buy == sell or routes.book.venue not in (buy, sell):
+                continue  # pool-to-pool trips are already in ``scan``, priced in CC
+            x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
+            cost_cc = SWAP_COST_CC * (routes.swaps(buy) + routes.swaps(sell))
+            net_usd = g - cost_cc * cc_in_usd
+            fp = "|".join(routes.book.fingerprint() if v == routes.book.venue else fingerprint(routes.pools[v])
+                          for v in (buy, sell))
+            found.append({
+                "token": token, "buy_on": buy, "sell_on": sell,
+                "size_cc": float(x / cc_in_usd), "size_usd": float(x),
+                "gross_cc": float(g / cc_in_usd), "net_cc": float(net_usd / cc_in_usd),
+                "net_usd": float(net_usd), "cost_cc": float(cost_cc), "via": "usd", "fp": fp,
+                "clears": net_usd >= MIN_ROUTE_USD,
+            })
+    return found
+
+
 # === paper desk ============================================================
 
 

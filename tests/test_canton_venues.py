@@ -181,3 +181,43 @@ def test_amm_depth_is_about_half_a_percent_of_each_side():
     pool = cantex_pool("USDCx", 1_000_000, 122_000)
     depth = m.amm_depth_usd(pool, Decimal("0.122"))
     assert float(depth) == pytest.approx(2 * 122_000 * 0.004988, rel=1e-3)
+
+
+def _book(fee="0"):
+    D = Decimal
+    return m.BookVenue("rocky", "CBTC-USDCX", ((D(100), D(1)), (D(99), D(1))),
+                       ((D(101), D(1)), (D(102), D(1))), D(1), D(fee))
+
+
+def test_book_walks_levels_and_reports_a_thin_book():
+    b = _book()
+    assert b.sell_base(Decimal("1.5")) == Decimal(100) + Decimal("0.5") * 99
+    assert b.buy_base(Decimal(152)) == 1 + Decimal(51) / 102
+    assert b.sell_base(Decimal(3)) is None and b.buy_base(Decimal(1000)) is None
+    assert _book("0.001").sell_base(Decimal(1)) == Decimal(100) * Decimal("0.999")
+
+
+def test_book_round_trips_through_json():
+    b = _book("0.00025")
+    assert m.book_from_json(m.book_to_json(b, "USDCX")) == b
+
+
+def test_dollar_routes_count_swaps_and_compare_like_for_like():
+    stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
+    pools = {"cantex": cantex_pool("CBTC", 10_000_000, Decimal("14.4"))}  # about $84.7K per CBTC
+    routes = m.DollarRoutes(pools, stable, _book(), Decimal(1))
+    assert routes.venues == ["cantex", "rocky"]
+    assert routes.swaps("cantex") == 2 and routes.swaps("rocky") == 1
+    assert routes.buy("rocky", Decimal(101)) == 1
+    assert routes.sell("rocky", Decimal(1)) == 100
+
+
+def test_usd_scan_only_adds_trips_that_touch_the_book():
+    stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
+    pools = {"cantex": cantex_pool("X", 1_000_000, 1_000_000), "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}
+    routes = m.DollarRoutes(pools, stable, _book(), Decimal(1))
+    rows = m.usd_scan("X", routes, Decimal("0.122"))
+    assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
+        ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
+    # a pool route is two swaps, the book one: three swaps a trip
+    assert all(r["cost_cc"] == 4.5 for r in rows)

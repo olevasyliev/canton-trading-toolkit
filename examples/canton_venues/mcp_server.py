@@ -73,12 +73,13 @@ def _premium_row(key: str) -> dict | None:
 server = MCPServer(
     "canton-venues",
     title="Canton Venues",
-    description="Live market data for Canton Network DEXes (Cantex, Tradecraft): prices, "
-                "premium to global markets, best execution, spreads, alerts.",
+    description="Live market data for Canton Network DEXes (Cantex, Tradecraft, Rocky, Ekiden): prices, "
+                "premium to global markets, best execution, spreads, perps, alerts.",
     instructions=(
         "Market data for Canton Network DEXes, refreshed every five minutes. Prices are in USD. "
         "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: it prices "
-        "both venues from live reserves and routes token-to-token trades through CC. Network fees "
+        "the pools from live reserves, routes token-to-token trades through CC, and adds Rocky's order "
+        "book where the pair trades there. Network fees "
         "(about 1 CC per Cantex swap) are not included in quotes. Nothing here executes a trade."
     ),
     website_url=SITE,
@@ -159,8 +160,9 @@ def token(symbol: str) -> dict:
 def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | None = None) -> dict:
     """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`,
     priced from live reserves on Cantex and Tradecraft. Shows every venue's output per leg; a
-    token-to-token trade routes through CC with each leg on its best venue. Pool fees and price
-    impact are included, network fees are not."""
+    token-to-token trade routes through CC with each leg on its best venue. When the pair also trades
+    on Rocky's order book (CBTC/USDCx, cETH/USDC.B) the same trade is priced there too, and `best`
+    says which wins. Pool fees and price impact are included, network fees are not."""
     books, cc_usd = _books()
     if (amount is None) == (amount_usd is None):
         raise ToolError("give exactly one of amount or amount_usd")
@@ -184,9 +186,29 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
                 "output_by_venue": outs,
                 "edge_over_worst": _r(L["out"] / worst - 1, 6) if worst > 0 and len(outs) > 1 else None}
 
-    return {"sell": names.get(r["sell"], r["sell"]), "buy": names.get(r["buy"], r["buy"]), "amount_in": _r(r["amount_in"], 10),
-            "amount_out": _r(r["amount_out"], 10), "legs": [leg(L) for L in r["legs"]],
-            "as_of": load("pools")["t"], "network_fees": "excluded (about 1 CC per Cantex swap)"}
+    out = {"sell": names.get(r["sell"], r["sell"]), "buy": names.get(r["buy"], r["buy"]), "amount_in": _r(r["amount_in"], 10),
+           "amount_out": _r(r["amount_out"], 10), "legs": [leg(L) for L in r["legs"]],
+           "as_of": load("pools")["t"], "network_fees": "excluded (about 1 CC per Cantex swap)"}
+    book = _book_quote(m.key(sell), m.key(buy), Decimal(str(amount)))
+    if book:
+        out["order_book"] = book
+        out["best"] = (f"{book['venue']} order book" if book["amount_out"] and book["amount_out"] > out["amount_out"]
+                       else "pools")
+    return out
+
+
+def _book_quote(sell: str, buy: str, amount: Decimal) -> dict | None:
+    """The same trade as one order on an order book, when one side is the book's base and the other
+    its dollar quote token (Rocky CBTC/USDCx, cETH/USDC.B)."""
+    for base, d in (load("pools").get("books") or {}).items():
+        if {sell, buy} != {base, d["quote"]}:
+            continue
+        b = m.book_from_json(d)
+        got = b.sell_base(amount) if sell == base else b.buy_base(amount)
+        return {"venue": d["venue"], "market": d["symbol"], "amount_out": _r(got, 10),
+                "taker_fee_assumed": d["fee"],
+                "note": "one order, walked through the book's resting levels; null means the book is too thin"}
+    return None
 
 
 @server.tool(title="Canton premium to global prices")
