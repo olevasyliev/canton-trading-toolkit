@@ -221,3 +221,16 @@ def test_usd_scan_only_adds_trips_that_touch_the_book():
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
     # a pool route is two swaps, the book one: three swaps a trip
     assert all(r["cost_cc"] == 4.5 for r in rows)
+
+
+def test_swap_cost_uses_a_venues_own_stated_fee():
+    assert m.swap_cost_cc("cantex", Decimal("0.125")) == Decimal("1.5")
+    assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal(14)  # $1.75 at $0.125
+
+
+def test_router_compares_with_the_runner_up_not_the_worst():
+    pools = {"cantex": cantex_pool("USDCx", 1_600_000, 196_000),
+             "tradecraft": tc_pool("USDCx", 6_000_000, 735_000),
+             "thin": cantex_pool("USDCx", 16_000, 1_960)}
+    fill = m.route_order(pools, "sell", 1000, Decimal("0.1225"), Decimal("0.1225"))
+    assert fill["other"] != "thin"

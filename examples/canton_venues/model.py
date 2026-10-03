@@ -127,6 +127,13 @@ def edge_bps(a: Decimal, b: Decimal) -> float:
 # === execution ladder ======================================================
 
 
+def runner_up_bps(outs: dict) -> float:
+    """How much the best venue beats the next best, in bps. Against the worst it would only
+    measure how thin the smallest pool is."""
+    top = sorted(outs.values(), reverse=True)[:2]
+    return edge_bps(top[0], top[1]) if len(top) == 2 else 0.0
+
+
 def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> list[dict]:
     """What each venue returns at each size, both directions.
 
@@ -146,7 +153,7 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
                 "amount_in": float(amount),
                 "out": {v: float(o) for v, o in outs.items()},
                 "best": best,
-                "edge_bps": edge_bps(max(outs.values()), min(outs.values())) if len(outs) > 1 else 0.0,
+                "edge_bps": runner_up_bps(outs),
             })
     return rows
 
@@ -208,7 +215,8 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
                 if buy == sell:
                     continue
                 x, g = best_round_trip(pools[buy], pools[sell], cc_in_usd)
-                net_cc = g - ROUND_TRIP_COST_CC
+                cost_cc = swap_cost_cc(buy, cc_in_usd) + swap_cost_cc(sell, cc_in_usd)
+                net_cc = g - cost_cc
                 found.append({
                     "token": token,
                     "buy_on": buy,
@@ -218,6 +226,7 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
                     "gross_cc": float(g),
                     "net_cc": float(net_cc),
                     "net_usd": float(net_cc * cc_in_usd),
+                    "cost_cc": float(cost_cc),
                     "clears": net_cc * cc_in_usd >= MIN_ROUTE_USD,
                 })
     return sorted(found, key=lambda r: -r["net_usd"])
@@ -227,6 +236,15 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
 
 # Network cost of one swap on Canton, the same assumption as ROUND_TRIP_COST_CC (3 CC for two).
 SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
+# Venues that state their own per-swap network fee, in dollars. OneSwap's docs: "typically around
+# $1.5-2 at recent network prices"; the midpoint is used.
+SWAP_COST_USD = {"oneswap": Decimal("1.75")}
+
+
+def swap_cost_cc(venue: str, cc_in_usd: Decimal) -> Decimal:
+    """Network cost of one swap on ``venue``, in CC."""
+    usd = SWAP_COST_USD.get(venue)
+    return usd / cc_in_usd if usd is not None else SWAP_COST_CC
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
 BOOK_TAKER_FEE = {"rocky": Decimal("0.00025")}
@@ -336,7 +354,7 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal) -> list[dict]:
                 "out": {v: (float(o) if o is not None else None) for v, o in outs.items()},
                 "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
                 "best": best,
-                "edge_bps": edge_bps(max(filled.values()), min(filled.values())) if len(filled) > 1 else 0.0,
+                "edge_bps": runner_up_bps(filled),
             })
     return rows
 
@@ -374,7 +392,9 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
             if buy == sell or routes.book.venue not in (buy, sell):
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
             x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
-            cost_cc = SWAP_COST_CC * (routes.swaps(buy) + routes.swaps(sell))
+            # a pool route is the CC/USDCx leg (taken at the default cost) plus the venue's own swap
+            cost_cc = sum(swap_cost_cc(v, cc_in_usd) + (SWAP_COST_CC if routes.swaps(v) == 2 else 0)
+                          for v in (buy, sell))
             net_usd = g - cost_cc * cc_in_usd
             fp = "|".join(routes.book.fingerprint() if v == routes.book.venue else fingerprint(routes.pools[v])
                           for v in (buy, sell))
@@ -399,8 +419,8 @@ def route_order(pools: dict[str, VenuePool], side: str, size_usd: int,
     cc_amount = Decimal(size_usd) / cc_in_usd
     amount = cc_amount if side == "sell" else cc_amount * mid
     outs = {v: p.out(side == "sell", amount) for v, p in pools.items()}
-    best = max(outs, key=outs.get)
-    worst = min(outs, key=outs.get)
+    # against the runner-up, not the worst: with four venues the worst is a straw man
+    best, worst = sorted(outs, key=outs.get, reverse=True)[:2]
     extra = outs[best] - outs[worst]
     extra_usd = extra * (cc_in_usd / mid if side == "sell" else cc_in_usd)
     return {
@@ -482,7 +502,18 @@ def _tradecraft_out(cc: Decimal, tok: Decimal, fee: Decimal):
     return out
 
 
-FORMULAS = {"cantex": _cantex_out, "tradecraft": _tradecraft_out}
+def _cp_out(cc: Decimal, tok: Decimal, fee: Decimal):
+    from canton_toolkit import constant_product_output
+
+    def out(sell_cc: bool, amount: Decimal) -> Decimal:
+        if sell_cc:
+            return constant_product_output(cc, tok, amount, fee)
+        return constant_product_output(tok, cc, amount, fee)
+    return out
+
+
+# cp: plain constant product, fee on the input (OneSwap, Pool Party; assumed, see their adapters)
+FORMULAS = {"cantex": _cantex_out, "tradecraft": _tradecraft_out, "cp": _cp_out}
 
 
 def pool_to_json(p: VenuePool) -> dict:

@@ -5,6 +5,8 @@ Sources, all public, no keys:
   Tradecraft  /v1 REST                               (TradecraftAdapter)
   Rocky       spot and perp order books              (RockyAdapter)
   Ekiden      MainNet perpetuals                     (EkidenAdapter)
+  OneSwap     pool reserves                          (OneSwapPublicData)
+  Pool Party  pool reserves and volume               (PoolPartyPublicData)
   DefiLlama   Canton DEX volume and chain TVL        (ecosystem context)
   CoinGecko   outside prices for the premium board
 
@@ -33,7 +35,14 @@ import httpx
 import model as m
 from model import CC, VenuePool
 
-from canton_toolkit import CantexPublicData, EkidenAdapter, RockyAdapter, TradecraftAdapter
+from canton_toolkit import (
+    CantexPublicData,
+    EkidenAdapter,
+    OneSwapPublicData,
+    PoolPartyPublicData,
+    RockyAdapter,
+    TradecraftAdapter,
+)
 
 log = logging.getLogger("venues")
 
@@ -70,10 +79,10 @@ VENUES = [
      "note": "Order books and 24h tickers from the public API."},
     {"id": "ekiden", "name": "Ekiden", "kind": "Perpetuals", "status": "priced",
      "note": "MainNet tickers, mark, index and funding from the public API."},
-    {"id": "poolparty", "name": "Pool Party", "kind": "Spot AMM", "status": "volume",
-     "llama": "Pool Party", "note": "Public API; not priced yet. Volume via DefiLlama."},
-    {"id": "oneswap", "name": "OneSwap", "kind": "Spot AMM", "status": "next",
-     "note": "Public pool reserves; not connected yet. Volume not published."},
+    {"id": "poolparty", "name": "Pool Party", "kind": "Spot AMM", "status": "priced",
+     "note": "Reserves and volume from the public API. CC pairs priced; fee (0.30%) from CCTools."},
+    {"id": "oneswap", "name": "OneSwap", "kind": "Spot AMM", "status": "priced",
+     "note": "Reserves from the public API. CC pairs priced. Volume is not published."},
     {"id": "canborsa", "name": "Canborsa", "kind": "Perpetuals", "status": "waiting",
      "note": "Only the web app's internal API; a public API is on their Q4 roadmap."},
     {"id": "silvana", "name": "Silvana", "kind": "Private order book", "status": "closed",
@@ -109,8 +118,10 @@ class Collector:
         self.tradecraft = TradecraftAdapter()
         # order-book venues: optional, each fails alone and reconnects on a later tick
         self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"),
-                         "ekiden": EkidenAdapter()}
+                         "ekiden": EkidenAdapter(), "oneswap": OneSwapPublicData(),
+                         "poolparty": PoolPartyPublicData()}
         self.live: set[str] = set()
+        self.cc_usd_last = Decimal(0)
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -315,6 +326,8 @@ class Collector:
             perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
         own = {"cantex": cx_volume_usd, "tradecraft": sum(self.slow.get("tc_volume", {}).values()) or None,
                "rocky": rocky_spot_vol, **perp_vol}
+        if "poolparty" in self.live and self.slow.get("pp_volume") is not None:
+            own["poolparty"] = self._pp_volume_usd(self.cc_usd_last)[1]
         rows = []
         for v in VENUES:
             vol = own.get(v["id"]) if v["id"] in own else llama.get(v.get("llama"))
@@ -385,6 +398,66 @@ class Collector:
                 m.FORMULAS["tradecraft"](cc_res, tok_res, st.total_fee), "tradecraft", st.total_fee)
         return books
 
+    async def _reserve_venues(self, books, cx_states) -> None:
+        """OneSwap and Pool Party CC pools into ``books``; each venue fails alone.
+
+        OneSwap names issuers, so its tokens match by instrument. Pool Party names only instrument
+        ids, so its tokens match by id, and only where that id is unambiguous across Cantex tokens.
+        """
+        cc_inst = next(s.token_a if s.symbol_a == CC else s.token_b
+                       for s in cx_states if CC in (s.symbol_a, s.symbol_b))
+        by_inst, by_id = {}, {}
+        for t in self.slow.get("tokens_info", []):
+            by_inst[(t["instrument_admin"], t["instrument_id"])] = t["instrument_symbol"]
+            by_id.setdefault(t["instrument_id"], set()).add(t["instrument_symbol"])
+        self.slow["pp_pool_of"] = {}
+        for venue in ("oneswap", "poolparty"):
+            src = await self._venue(venue)
+            if src is None:
+                continue
+            try:
+                pools = await src.pools()
+                if venue == "poolparty":
+                    self.slow["pp_volume"] = await src.volume()
+            except Exception as exc:  # noqa: BLE001
+                self._drop(venue, exc)
+                continue
+            for p in pools:
+                if cc_inst.id not in (p.token_a.id, p.token_b.id):
+                    continue  # pools without CC are not priced yet
+                cc_is_a = p.token_a.id == cc_inst.id
+                if venue == "oneswap" and (p.token_a if cc_is_a else p.token_b) != cc_inst:
+                    continue  # an "Amulet" from another issuer is not CC
+                tok = p.token_b if cc_is_a else p.token_a
+                if tok.admin:
+                    sym = by_inst.get((tok.admin, tok.id))
+                else:
+                    names = by_id.get(tok.id, set())
+                    sym = next(iter(names)) if len(names) == 1 else None
+                if sym is None:
+                    continue  # a token no venue we price can name
+                cc_res, tok_res = (p.reserve_a, p.reserve_b) if cc_is_a else (p.reserve_b, p.reserve_a)
+                # lp_share 0: neither venue publishes the LP cut, so no fee APR is shown for them
+                books.setdefault(m.key(sym), {})[venue] = VenuePool(
+                    venue, sym, cc_res, tok_res, p.fee, Decimal(0),
+                    m.FORMULAS["cp"](cc_res, tok_res, p.fee), "cp", p.fee)
+                self.slow.setdefault("pp_pool_of", {})[(venue, m.key(sym))] = p.pool_id
+
+    def _pp_volume_usd(self, cc_usd) -> tuple[dict[str, float], float]:
+        """Pool Party volume per CC-paired token key, and its total, in dollars."""
+        per_pool = self.slow.get("pp_volume") or {}
+        stable = {"USDCx", "USDC.B", "FRXUSD.B"}
+        total, by_key = 0.0, {}
+        for name, vol in per_pool.items():
+            usd = (float(vol["Amulet"]) * float(cc_usd) if "Amulet" in vol
+                   else next((float(v) for k, v in vol.items() if k in stable), 0.0))
+            total += usd
+        for (venue, key), pool_id in (self.slow.get("pp_pool_of") or {}).items():
+            vol = per_pool.get(pool_id) or {}
+            if venue == "poolparty" and "Amulet" in vol:
+                by_key[key] = float(vol["Amulet"]) * float(cc_usd)
+        return by_key, total
+
     def _usd_series(self, now_ms: int, usdcx_usd: Decimal) -> dict[str, list]:
         """Hourly dollar series per token from Cantex candles (X-CC times CC-USDCX)."""
         candles = self.slow.get("candles") or {}
@@ -425,11 +498,13 @@ class Collector:
         fees_cc = Decimal(cx_volume.get("fees_cc") or 0)
         lp_share_cx = Decimal(cx_volume["lp_fees_cc"]) / fees_cc if fees_cc else Decimal("0.9")
         books = self._books(cx_states, tc_states, tc_pools, lp_share_cx)
+        await self._reserve_venues(books, cx_states)
         usdcx_usd = Decimal(str(gecko.get(USDCX_GECKO, {}).get("usd", 1)))
         stable = books.get(USDCX)
         if not stable:
             raise RuntimeError("no CC/USDCx pool on any venue")
         cc_usd = m.cc_usd(list(stable.values()), usdcx_usd)
+        self.cc_usd_last = cc_usd
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
         perps = await self._perps(gecko, cc_usd)
@@ -568,6 +643,7 @@ class Collector:
             elif base == CC:
                 vol_cx[target] = vol_cx.get(target, 0) + float(t["base_volume"]) * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
+        pp_vol, _ = self._pp_volume_usd(cc_usd)
         out = []
         for sym, pools in books.items():
             price = prices[sym]
@@ -576,7 +652,7 @@ class Collector:
                 venues[v] = {"price_usd": r(cc_usd / p.mid, 8),
                              "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
                              "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
-            vol = vol_cx.get(sym, 0.0)
+            vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0)
             if sym in ob:
                 # a book's liquidity is what rests within 1% of mid, not a pool's full reserves
                 venues["rocky"] = {"price_usd": ob[sym]["price_usd"], "liquidity_usd": ob[sym]["depth_usd"],
@@ -728,6 +804,7 @@ class Collector:
                 v = float(t["target_volume"] if m.key(t["target_currency"]) == CC else t["base_volume"])
                 cx_vol[other] = cx_vol.get(other, 0) + v * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
+        pp_vol, _ = self._pp_volume_usd(cc_usd)
         tc_by_sym = {}
         for st in tc_states:
             if CC in (st.token_a, st.token_b):
@@ -736,12 +813,13 @@ class Collector:
         for sym, pools in books.items():
             for v, p in pools.items():
                 tvl = float(2 * p.cc_reserve * cc_usd)
-                vol = cx_vol.get(sym) if v == "cantex" else tc_vol.get(tc_by_sym.get(sym, ""), None)
+                vol = (cx_vol.get(sym) if v == "cantex" else tc_vol.get(tc_by_sym.get(sym, ""), None)
+                       if v == "tradecraft" else pp_vol.get(sym) if v == "poolparty" else None)
                 rows.append({
                     "venue": v, "pair": f"CC/{p.token}", "tvl_usd": round(tvl, 2),
                     "volume_24h_usd": r(vol, 2), "fee": r(p.fee, 6),
                     "fee_apr": r(m.fee_apr(vol, float(p.fee), float(p.lp_share), tvl), 6)
-                    if vol is not None else None,
+                    if vol is not None and p.lp_share > 0 else None,
                 })
         return sorted(rows, key=lambda x: -x["tvl_usd"])
 

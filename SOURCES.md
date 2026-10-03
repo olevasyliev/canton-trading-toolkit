@@ -325,3 +325,23 @@ public routes.
 
 Spot symbols on 2026-10-03: CBTC-USDCX, CBTC-USDCB, CETH-USDCB, CETH-CBTC. Perps: BTCUSDT,
 ETHUSDT, CCUSDT. `/fapi/v1/premiumIndex` was empty and `/fapi/v1/openInterest` returned `"0"`.
+
+---
+
+# OneSwap (`venues/oneswap.py`) and Pool Party (`venues/poolparty.py`) — reserves only
+
+Both are AMMs that publish reserves without a key and no keyless quote route, so pools are priced
+locally as constant product with the fee on the input (`venues/reserves.py`). Verified live on MainNet,
+2026-10-03.
+
+| Venue | Route | Notes |
+|---|---|---|
+| OneSwap | `GET https://api.oneswap.cc/swapv2/api/rt/pools` | `assetX`/`assetY` with instrument `admin` + `id`; reserves as numbers and, under `accounting`, as decimal strings (used); `feeBps` 30 |
+| OneSwap | `GET /api/rt/tokens` | symbol, admin, id, registry URL |
+| Pool Party | `GET https://api-mainnet.cantonwallet.com/canton/pool-party/public/v1/tvl` | `pools: {"<idA>-<idB>": {id: reserve}}`; ids only, no issuer; empty pools listed |
+| Pool Party | `GET …/volume?period=24h|7d` | `perPool[name].volume` per token, in token units |
+
+Fees: OneSwap's docs state "the pool's 0.30% swap fee" plus a per-swap network fee carved from the
+input, "typically around $1.5–2"; the collector charges $1.75 per OneSwap swap in the scanner. Pool Party
+publishes no fee or curve; 0.30% is CCTools' `feeRate` for every Send pool (third party). Quotes
+(`POST /api/rt/pool/{id}/quote`) need an OneSwap `sk_live_` key and are not used.
