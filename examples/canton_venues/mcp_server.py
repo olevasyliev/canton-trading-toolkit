@@ -225,8 +225,9 @@ def premiums(kind: str = "all") -> dict:
 
 @server.tool(title="Cross-venue spreads")
 def spreads(limit: int = 10) -> dict:
-    """Buy-on-one-venue, sell-on-the-other round trips at their best size, after a 3 CC network
-    cost; `clears` is true when one nets at least $0.50."""
+    """Buy-on-one-venue, sell-on-the-other round trips at their best size, after network cost of
+    1.5 CC per swap (3 CC pool to pool; trips through Rocky's order book, marked via=usd, are
+    three swaps and carry their own cost_cc). `clears` is true when one nets at least $0.50."""
     s = load("scan")
     return {"as_of": s["t"], "round_trip_cost_cc": s["round_trip_cost_cc"], "routes": s["routes"][:max(1, min(limit, 50))]}
 

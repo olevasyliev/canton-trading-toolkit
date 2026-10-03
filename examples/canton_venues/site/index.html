@@ -834,7 +834,7 @@ function renderDesk() {
       <p class="sub" style="margin:12px 0 0">Paper: priced off live pool state. Pools never move, network fees are not deducted, and the gap is measured against the worse venue, so it is a choice worth making, not profit.</p>`;
   }
   const routes = (D.scan?.routes || []).slice(0, 5), trades = a.trades || [];
-  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after deducting 3 CC for network costs, and only above $0.50.</p>
+  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs of 1.5 CC per swap (a pool-to-pool trip is two swaps, a trip through an order book three), and only above $0.50.</p>
     <div class="kpi num ${a.pnl_usd > 0 ? "up" : ""}">${a.pnl_usd > 0 ? "+" : ""}$${(a.pnl_usd || 0).toFixed(2)}<small>${trades.length} ${trades.length === 1 ? "trade" : "trades"} since ${a.since ? new Date(a.since * 1000).toLocaleDateString([], { day: "numeric", month: "short" }) : "start"}</small></div>
     ${trades.length ? `<table class="mini"><tbody>${trades.slice(-4).reverse().map((t) => `<tr><td class="l num muted">${hm(t.t)}</td><td class="l">${esc(t.token)}</td><td class="l">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num up">+$${t.net_usd.toFixed(2)}</td></tr>`).join("")}</tbody></table>` : ""}
     <p class="sub" style="margin:14px 0 0">Closest to clearing now, after costs</p>
