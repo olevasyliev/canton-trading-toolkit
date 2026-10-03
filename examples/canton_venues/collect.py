@@ -475,6 +475,7 @@ class Collector:
             router["by_venue"][fill["venue"]] = router["by_venue"].get(fill["venue"], 0) + 1
             router.setdefault("since", now)
             router["fills"] = (router["fills"] + [fill])[-DESK_KEEP:]
+            router.update(m.router_stats(router["fills"]))
 
         arb = self.desk["arb"]
         for route in scan:

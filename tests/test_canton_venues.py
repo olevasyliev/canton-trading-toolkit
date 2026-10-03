@@ -97,6 +97,13 @@ def test_route_order_values_the_extra_in_dollars():
     assert m.route_order({"cantex": pools["cantex"]}, "sell", 1000, Decimal(1), Decimal(1)) is None
 
 
+def test_router_stats_is_a_median_not_a_sum():
+    fills = [{"edge_bps": b, "extra_usd": b / 10} for b in (10, 20, 300, 30)]
+    st = m.router_stats(fills)
+    assert st == {"window": 4, "median_edge_bps": 25.0, "median_extra_usd": 2.5, "max_edge_bps": 300}
+    assert m.router_stats([]) == {}
+
+
 def test_fingerprint_changes_with_reserves():
     a = cantex_pool("X", 100, 100)
     b = cantex_pool("X", 101, 100)

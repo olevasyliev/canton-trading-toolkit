@@ -71,10 +71,10 @@ def compose(summary: dict, tokens: list[dict], premium: list[dict], desk: dict,
         lines.append("💵 Every stablecoin within 0.5% of $1")
 
     router = (desk or {}).get("router") or {}
-    if router.get("n"):
+    if router.get("median_edge_bps") is not None:
         lines.append("")
-        lines.append(f"🔁 Paper router: <b>+${router['extra_usd']:.2f}</b> kept over "
-                     f"{router['n']:,} orders by picking the better venue")
+        lines.append(f"🔁 Better venue beats the other by a median <b>{router['median_edge_bps'] / 100:.2f}%</b> "
+                     f"on a $1K CC order (last {router['window']:,}, paper)")
     lines += ["", '🔗 <a href="https://cantonvenues.com">cantonvenues.com</a>']
     return "\n".join(lines)
 

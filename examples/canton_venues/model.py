@@ -8,6 +8,7 @@ the spread scan and the paper desk are all derived from those.
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -217,6 +218,20 @@ def route_order(pools: dict[str, VenuePool], side: str, size_usd: int,
         "edge_bps": edge_bps(outs[best], outs[worst]),
         "extra_usd": float(extra_usd),
     }
+
+
+def router_stats(fills: list[dict]) -> dict:
+    """The honest headline: the median gap between venues on one order, not a running sum.
+
+    Summing the gap to the worse venue overstates: these are paper fills on pools that never
+    move, without network fees, against a venue a careful trader would not have picked anyway.
+    """
+    if not fills:
+        return {}
+    edges = [f["edge_bps"] for f in fills]
+    return {"window": len(fills), "median_edge_bps": round(statistics.median(edges), 2),
+            "median_extra_usd": round(statistics.median(f["extra_usd"] for f in fills), 4),
+            "max_edge_bps": round(max(edges), 2)}
 
 
 def fingerprint(*pools: VenuePool) -> str:

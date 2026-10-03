@@ -33,10 +33,10 @@ def test_compose_ranks_movers_and_skips_thin_pools():
     ]
     summary = {"cc_usd": 0.1229, "cc_change_24h": 0.0044, "cantex_24h": {"swaps": 142028},
                "ecosystem": {"dex_volume_24h": 29_200_000, "dex_change_1d": -21.4}}
-    desk = {"router": {"n": 12, "extra_usd": 30.5}}
+    desk = {"router": {"n": 12, "extra_usd": 30.5, "window": 12, "median_edge_bps": 26.9}}
     html = digest.compose(summary, tokens, premium, desk, NOW)
     assert "3 Oct" in html and "$0.1229" in html and "$29.2M" in html and "142,028" in html
     assert "📈 EDELx +20.0%" in html and "TINY" not in html
     assert "📉 HANDL −5.0%" in html
     assert "Off peg: USDXLR +1.10%" in html
-    assert "+$30.50" in html
+    assert "median <b>0.27%</b>" in html and "last 12, paper" in html and "$30.50" not in html
