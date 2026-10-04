@@ -865,19 +865,24 @@ function renderDesk() {
   const d24 = a.last_24h || {};
   $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs (Cantex 0.86 CC a swap, measured; OneSwap $1.75, as it states; others 1.5 CC, assumed), and only above $0.50. Each spread is booked once, when it opens.</p>
     <div class="kpi num">${d24.trips || 0}<small>${d24.trips === 1 ? "trip" : "trips"} in the last 24 hours${d24.median_net_usd != null ? `, median +$${d24.median_net_usd.toFixed(2)} a trip` : ""}</small></div>
-    <p class="sub" style="margin:0 0 10px">Paper, and with no one competing for the spread. The study below shows other traders close most spreads within a minute or two.</p>
+    <p class="sub" style="margin:0 0 10px">Paper, and with no one competing for the spread.</p>
     ${trades.length ? `<table class="mini"><tbody>${trades.slice(-4).reverse().map((t) => `<tr><td class="l num muted">${hm(t.t)}</td><td class="l">${esc(t.token)}</td><td class="l">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num up">+$${t.net_usd.toFixed(2)}</td></tr>`).join("")}</tbody></table>` : ""}
     <p class="sub" style="margin:14px 0 0">Closest to clearing now, after costs</p>
     <table class="mini"><tbody>${routes.map((t) => `<tr><td class="l"><b>${esc(t.token)}</b></td><td class="l muted">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num muted">${usdSize(t.size_usd)}</td><td class="num ${t.net_usd >= 0 ? "up" : "down"}">${t.net_usd >= 0 ? "+" : "-"}$${Math.abs(t.net_usd).toFixed(2)}</td></tr>`).join("")}</tbody></table>`;
 }
 
 /* ---------- spread study (one measured run, fixed data) ---------- */
-const STUDY = {"start": 1791038134, "end": 1791045315, "interval_s": 20, "samples": 360, "episodes": 19, "median_life_s": 60, "gone_fast": 6, "pools_changed": 12, "typical_best_net": 0.41, "share_any_clearing": 0.34, "capture_usd": 34.17, "median_net": 0.78, "median_size": 306, "stable_episodes": 1, "hist": [{"label": "under 40 s", "n": 6}, {"label": "40-80 s", "n": 5}, {"label": "80-160 s", "n": 4}, {"label": "160 s-10 min", "n": 2}, {"label": "over 10 min", "n": 2}], "fees": {"CC-USDCX": 1.2, "CBTC-CC": 0.824, "EDELX-CC": 0.667, "FRXUSD.B-CC": 1.091}, "fee_median": 0.864, "fee_quotes": 96, "top": [{"token": "USDCX", "buy": "tradecraft", "sell": "cantex", "life_s": 80, "net": 10.09, "size": 1266}, {"token": "CBTC", "buy": "cantex", "sell": "rocky", "life_s": 80, "net": 6.08, "size": 727}, {"token": "CBTC", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.36, "size": 384}, {"token": "CETH", "buy": "tradecraft", "sell": "rocky", "life_s": 20, "net": 2.23, "size": 459}, {"token": "CETH", "buy": "cantex", "sell": "rocky", "life_s": 20, "net": 2.08, "size": 386}]};
+const CANTEX_FEES = { "CC-USDCX": 1.2, "CBTC-CC": 0.824, "EDELX-CC": 0.667, "FRXUSD.B-CC": 1.091 };
 function studyDur(r) { const h = (r.end - r.start) / 3600; return h >= 1.5 ? h.toFixed(0) + " h" : h >= 0.9 ? "1 h" : Math.round(h * 60) + " min"; }
 function renderStudy() {
   // the first, hand-run measurement is fixed here; daily runs come from spreads.json
-  // runs before v2 valued USDC.B at its pool premium and counted trips that did not exist; not shown
-  const runs = [STUDY, ...((D.spreads && D.spreads.runs) || []).filter((r) => (r.v || 1) >= 2)].filter((r) => r.episodes != null);
+  // Runs before v2 valued USDC.B at its pool premium and counted trips through Rocky that did not
+  // exist; that includes the hand run of 3 Oct (17 of its 19 spreads went through Rocky), so it is
+  // not shown either. The section stays hidden until a v2 run exists.
+  const runs = ((D.spreads && D.spreads.runs) || []).filter((r) => (r.v || 1) >= 2 && r.episodes != null);
+  $("study").style.display = runs.length ? "" : "none";
+  document.querySelector('.nav a[href="#study"]').style.display = runs.length ? "" : "none";
+  if (!runs.length) return;
   const s = runs[runs.length - 1], d = new Date(s.start * 1000);
   const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) + ", from " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   $("studylead").innerHTML = `Latest run, ${studyDur(s)} on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} ${s.episodes === 1 ? "spread" : "spreads"}</b> cleared $0.50 after costs` +
@@ -887,7 +892,7 @@ function renderStudy() {
   $("studyrunswrap").style.display = runs.length < 2 ? "none" : "";
   $("studyruns").innerHTML = runs.length < 2 ? "" : `<div class="tablewrap"><table class="mini"><thead><tr><th class="l">Run</th><th>Spreads</th><th>Median life</th><th class="hide-sm">Pools traded</th><th>Captured once each</th></tr></thead><tbody>` +
     [...runs].reverse().map((r) => { const t = new Date(r.start * 1000); return `<tr><td class="l num">${t.toLocaleDateString([], { day: "numeric", month: "short" })} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}<span class="muted"> · ${studyDur(r)}</span></td><td class="num">${r.episodes}</td><td class="num">${r.median_life_s == null ? "–" : r.median_life_s + " s"}</td><td class="num hide-sm">${r.pools_changed} of ${r.episodes}</td><td class="num">$${r.capture_usd.toFixed(2)}</td></tr>`; }).join("") + "</tbody></table></div>";
-  const fees = Object.entries(STUDY.fees).sort((a, b) => a[1] - b[1]).map(([p, f]) => `${esc(p.replace("-", "/"))} ${f.toFixed(2)}`).join(", ");
+  const fees = Object.entries(CANTEX_FEES).sort((a, b) => a[1] - b[1]).map(([p, f]) => `${esc(p.replace("-", "/"))} ${f.toFixed(2)}`).join(", ");
   $("studystats").innerHTML = `
     <div class="srow"><span>Captured once each, no competition</span><b class="num">$${s.capture_usd.toFixed(2)} in ${studyDur(s)}</b></div>
     <div class="srow"><span>Median spread, after costs</span><b class="num">${s.median_net == null ? "–" : `+$${s.median_net.toFixed(2)} at $${s.median_size}`}</b></div>

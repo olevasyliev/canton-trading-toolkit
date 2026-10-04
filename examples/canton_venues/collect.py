@@ -854,10 +854,11 @@ class Collector:
             router.update(m.router_stats(router["fills"]))
 
         arb = self.desk["arb"]
-        if arb.get("v") != 2:
-            # v1 re-booked a standing spread whenever either pool moved at all, so one spread could
-            # be counted several times; the record restarts with one booking per spread
-            arb = self.desk["arb"] = {"v": 2, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
+        if arb.get("v") != 3:
+            # v1 re-booked a standing spread whenever either pool moved at all; v2 (to 2026-10-04)
+            # valued Rocky's USDC.B book at the pool premium and booked trips that did not exist.
+            # The record restarts at each fix.
+            arb = self.desk["arb"] = {"v": 3, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
         clearing = {f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}': r for r in scan if r["clears"]}
         for k, route in clearing.items():
             if k in arb["open"]:
