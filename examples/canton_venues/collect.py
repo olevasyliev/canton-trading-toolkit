@@ -233,10 +233,10 @@ class Collector:
         try:
             tickers = {t.symbol: t for t in await rocky.tickers()}
             markets = await rocky.markets()
-            quote_usd = {}
-            for q, k in ROCKY_QUOTES.items():
-                quote_usd[q] = usdcx_usd if k == USDCX else (
-                    m.token_usd(list(books[k].values()), cc_usd) if k in books else Decimal(1))
+            # A dollar token is worth its peg here, not its price in Canton's pools: valuing USDC.B at
+            # its pool premium (0.28% on 2026-10-04) made a CBTC trip through Rocky's USDC.B book look
+            # like $150 per $100K when the same books at par lost $128.
+            quote_usd = {q: (usdcx_usd if k == USDCX else Decimal(1)) for q, k in ROCKY_QUOTES.items()}
             out: dict = {}
             kept: dict = {}
             for mk in markets:  # price each token from its deepest dollar-quoted book
@@ -247,11 +247,14 @@ class Collector:
                 if book.mid_price is None:
                     continue
                 depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote])
+                if quote == USDCX and (k not in kept or depth > kept[k][1]):
+                    # dollar routes compare venues in USDCx, the pools' own dollar leg, so only a
+                    # USDCx book can carry one without a conversion we do not price
+                    kept[k] = (m.BookVenue("rocky", mk.symbol,
+                                           tuple((lv.price, lv.size) for lv in book.bids),
+                                           tuple((lv.price, lv.size) for lv in book.asks),
+                                           quote_usd[quote], m.BOOK_TAKER_FEE["rocky"]), depth)
                 if k not in out or depth > out[k]["depth_usd"]:
-                    kept[k] = m.BookVenue("rocky", mk.symbol,
-                                          tuple((lv.price, lv.size) for lv in book.bids),
-                                          tuple((lv.price, lv.size) for lv in book.asks),
-                                          quote_usd[quote], m.BOOK_TAKER_FEE["rocky"])
                     out[k] = {"symbol": mk.symbol, "quote": ROCKY_QUOTES[quote],
                               "price_usd": r(book.mid_price * quote_usd[quote], 8),
                               "depth_usd": r(depth, 2),
@@ -265,7 +268,7 @@ class Collector:
                 volume += t.turnover_24h * q_usd
                 if k in out:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
-            return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, b in kept.items()},
+            return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, (b, _) in kept.items()},
                     float(volume))
         except Exception as exc:  # noqa: BLE001
             self._drop("rocky", exc)
@@ -609,8 +612,8 @@ class Collector:
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
-            "books": {k: {v: m.book_to_json(b, ob[k][v]["quote"]) for v, b in vs.items()}
-                      for k, vs in ob_books.items()}})
+            # every book behind a dollar route is quoted in USDCx (see _rocky_spot)
+            "books": {k: {v: m.book_to_json(b, USDCX) for v, b in vs.items()} for k, vs in ob_books.items()}})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})

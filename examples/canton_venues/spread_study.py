@@ -125,7 +125,9 @@ async def main() -> None:
     if len(samples) < 10:
         log.error("only %d samples, not publishing", len(samples))
         return
-    run = summarize(samples, args.interval) | {"errors": errors}
+    # v2: dollar stables valued at par and dollar routes on USDCx books only (2026-10-04). The v1 run
+    # of that morning valued USDC.B at its pool premium and booked trips that did not exist.
+    run = summarize(samples, args.interval) | {"errors": errors, "v": 2}
     path = args.out / "api" / "v1" / "spreads.json"
     data = load_json(path, {"runs": []})
     data["runs"] = (data["runs"] + [run])[-KEEP_RUNS:]

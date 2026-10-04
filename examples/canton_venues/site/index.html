@@ -876,7 +876,8 @@ const STUDY = {"start": 1791038134, "end": 1791045315, "interval_s": 20, "sample
 function studyDur(r) { const h = (r.end - r.start) / 3600; return h >= 1.5 ? h.toFixed(0) + " h" : h >= 0.9 ? "1 h" : Math.round(h * 60) + " min"; }
 function renderStudy() {
   // the first, hand-run measurement is fixed here; daily runs come from spreads.json
-  const runs = [STUDY, ...((D.spreads && D.spreads.runs) || [])].filter((r) => r.episodes != null);
+  // runs before v2 valued USDC.B at its pool premium and counted trips that did not exist; not shown
+  const runs = [STUDY, ...((D.spreads && D.spreads.runs) || []).filter((r) => (r.v || 1) >= 2)].filter((r) => r.episodes != null);
   const s = runs[runs.length - 1], d = new Date(s.start * 1000);
   const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) + ", from " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   $("studylead").innerHTML = `Latest run, ${studyDur(s)} on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} ${s.episodes === 1 ? "spread" : "spreads"}</b> cleared $0.50 after costs` +
