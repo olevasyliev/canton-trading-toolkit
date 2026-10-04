@@ -41,6 +41,7 @@
   --ekiden: #8e4ec6;
   --oneswap: #e5484d;
   --poolparty: #d6409f;
+  --temple: #a07b3c;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #c5ccd6;
@@ -65,6 +66,7 @@
   --ekiden: #a875e0;
   --oneswap: #f2555a;
   --poolparty: #e66bb4;
+  --temple: #c9a25e;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #323546;
@@ -403,15 +405,15 @@ body:not(.tv) #tokenview { display: none; }
 
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built on <a href="https://github.com/olevasyliev/canton-trading-toolkit">canton_toolkit</a>, open source. Read-only: nothing here is signed or executed.</p><p id="updated"></p></div>
-    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Rocky from its order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid. For an order book, liquidity is the dollars resting within 1% of mid.</p></div>
-    <div><h4>Data</h4><p>Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple, the largest venue, needs a key and is shown by volume only.</p></div>
+    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple and Rocky from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid. For an order book, liquidity is the dollars resting within 1% of mid.</p></div>
+    <div><h4>Data</h4><p>Temple's API (account key), and the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple's volume comes from its own public settled-volume route.</p></div>
   </footer>
 </main>
 
 <script>
 const API = "api/v1/";
-const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden", oneswap: "OneSwap", poolparty: "Pool Party" };
-const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)", oneswap: "var(--oneswap)", poolparty: "var(--poolparty)" };
+const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden", oneswap: "OneSwap", poolparty: "Pool Party", temple: "Temple" };
+const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)", oneswap: "var(--oneswap)", poolparty: "var(--poolparty)", temple: "var(--temple)" };
 const S = { size: "liq", color: "change_24h", pair: "USDCX", side: "sell", sort: "liquidity_usd", dir: "desc", lpSort: "tvl_usd", lpAll: false };
 try { Object.assign(S, JSON.parse(localStorage.getItem("venues-view2") || "{}")); } catch (e) {}
 const D = {};
@@ -653,7 +655,7 @@ function renderVenues() {
   const d = D.venues, rows = d.venues || [];
   const spot = rows.filter((x) => x.kind !== "Perpetuals" && x.volume_24h_usd).sort((a, b) => b.volume_24h_usd - a.volume_24h_usd);
   const total = d.spot_volume_24h_usd || 1, priced = rows.filter((x) => x.status === "priced").length;
-  $("venlead").innerHTML = `We read <b>${priced} of ${rows.length}</b> Canton venues live. They carry <b>${d.spot_priced_share == null ? "–" : Math.round(d.spot_priced_share * 100) + "%"}</b> of spot DEX volume (${money(d.spot_volume_24h_usd)} in 24h) plus ${money(d.perp_volume_24h_usd)} of perps.`;
+  $("venlead").innerHTML = `We read <b>${priced} of ${rows.length}</b> Canton venues live. They carry <b>${d.spot_priced_share == null ? "–" : Math.round(d.spot_priced_share * 100) + "%"}</b> of the spot volume we can see (${money(d.spot_volume_24h_usd)} in 24h; OneSwap and Silvana publish none) plus ${money(d.perp_volume_24h_usd)} of perps.`;
   $("venbar").innerHTML = `<p class="sub" style="margin:0 0 8px">Spot volume, last 24 hours. Hatched: volume we see but cannot price.</p>
     <div class="vbar">${spot.map((x) => `<i class="${x.status === "priced" ? "" : "off"}" style="width:${x.volume_24h_usd / total * 100}%;${x.status === "priced" ? "background:" + (VC[x.id] || "var(--text-3)") : ""}" title="${esc(x.name)} ${money(x.volume_24h_usd)}"></i>`).join("")}</div>
     <div class="vbarkey">${spot.map((x) => `<span>${x.status === "priced" ? `<i style="background:${VC[x.id]}"></i>` : `<i class="off" style="background:var(--line-2)"></i>`}${esc(x.name)} ${Math.round(x.volume_24h_usd / total * 100)}%</span>`).join("")}</div>`;
@@ -807,7 +809,7 @@ function renderExecution() {
     rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b>${inU === "$" ? "" : ` <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span>`}</td>
       ${vs.map((v) => `<td class="num" style="${r.best === v ? `color:${VC[v]};font-weight:700` : ""}">${fmt(r.out[v], outU)}</td>`).join("")}
       <td class="num hide-sm">${V[r.best]} +${(r.edge_bps / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
-  $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. Rocky is one order on its ${esc(pair.book)} book, with an assumed ${(pair.book_fee * 100).toFixed(3)}% taker fee (Rocky publishes no fee schedule). Cost is measured against the Canton price.`
+  $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. ${Object.entries(pair.books || {}).map(([v, b]) => `${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}`).join("; ")}. Cost is measured against the Canton price.`
     : "Pool fees and price impact included, network fees excluded on both sides.";
 }
 function drawExec(pair, rows, xs) {

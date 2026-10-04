@@ -206,7 +206,7 @@ def test_book_round_trips_through_json():
 def test_dollar_routes_count_swaps_and_compare_like_for_like():
     stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
     pools = {"cantex": cantex_pool("CBTC", 10_000_000, Decimal("14.4"))}  # about $84.7K per CBTC
-    routes = m.DollarRoutes(pools, stable, _book(), Decimal(1))
+    routes = m.DollarRoutes(pools, stable, {"rocky": _book()}, Decimal(1))
     assert routes.venues == ["cantex", "rocky"]
     assert routes.swaps("cantex") == 2 and routes.swaps("rocky") == 1
     assert routes.buy("rocky", Decimal(101)) == 1
@@ -216,7 +216,7 @@ def test_dollar_routes_count_swaps_and_compare_like_for_like():
 def test_usd_scan_only_adds_trips_that_touch_the_book():
     stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
     pools = {"cantex": cantex_pool("X", 1_000_000, 1_000_000), "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}
-    routes = m.DollarRoutes(pools, stable, _book(), Decimal(1))
+    routes = m.DollarRoutes(pools, stable, {"rocky": _book()}, Decimal(1))
     rows = m.usd_scan("X", routes, Decimal("0.122"))
     assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}

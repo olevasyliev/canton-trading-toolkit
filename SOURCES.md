@@ -363,4 +363,13 @@ Spot order books on Canton; the largest venue by volume.
   (mainnet `https://api.templedigitalgroup.com`, testnet `https://api-testnet.templedigitalgroup.com`).
   Without a key the REST routes answer `API_KEY_AUTH_FAILED` and the WebSocket handshake 401 (checked
   2026-10-03). Keys are issued per account in the app (Settings > API Keys, `/settings?tab=api-keys` in
-  the MainNet app bundle). **The keyed shapes are not yet verified against live responses.**
+  the MainNet app bundle). **Verified live 2026-10-04 with a key; the payloads differ from the SDK types:**
+  `ticker` → `{"count", "tickers": [{symbol, last_price, volume_24h, quote_volume_24h_usd, trade_count_24h,
+  vwap_24h, …}]}` (numbers, no bid/ask); `orderbook` → `{"orderbook": {symbol, timestamp, sequence, best_bid,
+  best_ask, spread, bids/asks: [{price, quantity, available_quantity, cumulative_quantity, order_count}]}}`
+  (`levels` up to at least 200; `CC/USDCx` and `Amulet/USDCx` both accepted, answered as `CC/USDCx`);
+  `trades` → `{"count", "trades": [{trade_id, symbol, quantity, price, side, status, created_at}]}`.
+  Ten markets on 2026-10-04: CC, CBTC, eXAU, eXAG against USDCx (live) and USDA (idle), plus CBTC/eXAU and
+  USDCx/USDA. `GET /api/fees` gives the fee asset (USDCx) but no rate.
+- **Fees:** taker 1 bp, maker 0.5 bp, prepaid in USDCx; deposits/withdrawals 5-12 CC via partner wallets
+  (help.templedigitalgroup.com/en/articles/12810727-fees-rebates, read 2026-10-04).

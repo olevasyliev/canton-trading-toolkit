@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
 Environment=PYTHONUNBUFFERED=1
+# TEMPLE_API_KEY, so the study sees Temple's books too (chmod 600)
+EnvironmentFile=-/opt/canton-venues/.env
 ExecStart=/opt/canton-venues/.venv/bin/python spread_study.py --out /var/www/canton-venues --duration 3600 --interval 20
 TimeoutStartSec=5400
 MemoryMax=300M

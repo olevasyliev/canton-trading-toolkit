@@ -1,9 +1,8 @@
 """Offline tests for the Temple adapter.
 
-The settled-volume fixture is a live MainNet response from 2026-10-03. The
-order-book fixture follows the ``OrderBook`` type in Temple's SDK 2.1.10
-(``dist/api/types.d.ts``); it is not a captured response, because market data
-needs a key we do not hold yet.
+Fixtures are trimmed live MainNet responses: settled volume from 2026-10-03,
+ticker, order book and trades from 2026-10-04 (with a key). The keyed shapes
+differ from the SDK's TypeScript types, which is why they are pinned here.
 """
 
 from __future__ import annotations
@@ -26,9 +25,23 @@ SETTLED = {
         {"symbol": "CC/USDCx", "quote": "USDCx", "quote_volume": 505742.69472588145, "trade_count": 40320},
     ],
 }
-BOOK = {"symbol": "Amulet/USDCx", "bids": [{"price": "0.1210", "quantity": "5000"}],
-        "asks": [{"price": "0.1212", "quantity": "4000"}], "best_bid": "0.1210", "best_ask": "0.1212",
-        "spread": "0.0002", "timestamp": "2026-10-03T14:00:00Z"}
+BOOK = {"orderbook": {
+    "symbol": "CC/USDCx", "timestamp": "2026-10-04T09:13:51.791592904Z", "sequence": 1791105230360438,
+    "best_bid": 0.123, "best_ask": 0.12311, "spread": 0.00011,
+    "bids": [{"price": 0.123, "quantity": 1021, "available_quantity": 1021, "cumulative_quantity": 1021,
+              "order_count": 1, "first_created_at": "2026-10-04T09:13:47.808766Z"}],
+    "asks": [{"price": 0.12311, "quantity": 4000, "available_quantity": 4000, "cumulative_quantity": 4000,
+              "order_count": 2, "first_created_at": "2026-10-04T09:13:40.000000Z"}]}}
+TICKER = {"count": 2, "tickers": [
+    {"symbol": "CC/USDCx", "last_price": 0.12301, "volume_24h": 16216838.88, "quote_volume_24h_usd": 2004013.97,
+     "trade_count_24h": 263004},
+    {"symbol": "CBTC/USDCx", "last_price": 85125, "volume_24h": 193.0, "quote_volume_24h_usd": 16430419.0,
+     "trade_count_24h": 2080286}]}
+TRADES = {"count": 2, "trades": [
+    {"id": 109870826, "trade_id": "c13b9c88", "symbol": "CBTC/USDCx", "quantity": 0.00016, "price": 85126,
+     "side": "sell", "status": "pending", "created_at": "2026-10-04T09:13:52.574229Z"},
+    {"id": 109870827, "trade_id": "2b7cc87f", "symbol": "CBTC/USDCx", "quantity": 0.000154, "price": 85125,
+     "side": "buy", "status": "pending", "created_at": "2026-10-04T09:13:52.655223Z"}]}
 
 
 def _adapter(seen: list, key: str | None = None) -> TempleAdapter:
@@ -36,10 +49,11 @@ def _adapter(seen: list, key: str | None = None) -> TempleAdapter:
         seen.append(request)
         if request.url.path == "/api/exchange/settled_volume":
             return httpx.Response(200, json=SETTLED)
-        if request.url.path == "/api/v1/market/orderbook":
+        keyed = {"/api/v1/market/orderbook": BOOK, "/api/v1/market/ticker": TICKER, "/api/v1/market/trades": TRADES}
+        if request.url.path in keyed:
             if request.headers.get("X-API-Key") != "k":
                 return httpx.Response(401, json={"code": "API_KEY_AUTH_FAILED"})
-            return httpx.Response(200, json=BOOK)
+            return httpx.Response(200, json=keyed[request.url.path])
         return httpx.Response(404, text="not found")
     return TempleAdapter(api_key=key or "", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
@@ -69,7 +83,19 @@ async def test_order_book_with_a_key_uses_the_header_and_amulet_symbol() -> None
         book = await temple.order_book("CC/USDCx", 20)
     assert seen[-1].url.params["symbol"] == "Amulet/USDCx"
     assert seen[-1].url.params["levels"] == "20"
-    assert book.best_bid.price == Decimal("0.1210") and book.best_ask.size == Decimal(4000)
+    assert book.best_bid.price == Decimal("0.123") and book.best_ask.size == Decimal(4000)
+    assert book.symbol == "CC/USDCx"  # answered as CC whatever was asked
+
+
+async def test_ticker_and_trades_unwrap_the_live_envelopes() -> None:
+    async with _adapter([], key="k") as temple:
+        tickers = {t.symbol: t for t in await temple.tickers()}
+        trades = await temple.recent_trades("CBTC/USDCx")
+        markets = [mk.symbol for mk in await temple.markets()]
+    assert tickers["CBTC/USDCx"].turnover_24h == Decimal("16430419.0")
+    assert tickers["CC/USDCx"].best_bid is None  # Temple's ticker carries no bid/ask
+    assert trades[0].trade_id == "2b7cc87f" and trades[0].side.value == "buy"
+    assert markets == ["CC/USDCx", "CBTC/USDCx"]
 
 
 async def test_markets_come_from_settled_volume() -> None:

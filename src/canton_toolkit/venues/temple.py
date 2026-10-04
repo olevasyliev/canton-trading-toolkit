@@ -8,17 +8,22 @@ is the largest venue on the network by volume. Two surfaces:
   MainNet on 2026-10-03.
 - **Market data, key required.** Ticker, order book and recent trades under
   ``/api/v1/market/*`` need an ``X-API-Key`` header, issued per account in the
-  Temple app (Settings > API Keys). Routes, parameters and payload shapes are
-  taken from Temple's own SDK, ``@temple-digital-group/temple-canton-js`` 2.1.10
-  (``dist/api/index.js``, ``dist/api/types.d.ts``, ``src/config/index.js``);
-  **not yet verified against live responses** because we hold no key. Without a
-  key these methods raise ``VenueAuthError`` instead of calling out.
+  Temple app (Settings > API Keys). Routes and parameters come from Temple's SDK
+  ``@temple-digital-group/temple-canton-js`` 2.1.10; the payloads were verified
+  live on MainNet on 2026-10-04 and **differ from the SDK's TypeScript types**:
+  each response is wrapped (``{"tickers": [...]}``, ``{"orderbook": {...}}``,
+  ``{"trades": [...]}``), numbers arrive as JSON numbers, the ticker carries no
+  bid/ask, and trades are stamped ``created_at``. Without a key these methods
+  raise ``VenueAuthError`` instead of calling out.
+- **Fees** (help.templedigitalgroup.com, "Fees & Rebates", read 2026-10-04):
+  taker 1 bp, maker 0.5 bp, prepaid in USDCx; deposits and withdrawals cost
+  5-12 CC through the partner wallets.
 
 Venue-shape notes:
 
-- CC is written ``Amulet`` on the wire for market data (the SDK rewrites
-  ``CC`` to ``Amulet`` in every symbol); settled volume reports ``CC/USDCx``.
-  Symbols are passed through here; ``wire_symbol`` does the rewrite.
+- The SDK rewrites ``CC`` to ``Amulet`` in request symbols; the live API accepts
+  both and answers with ``CC/USDCx`` either way. ``wire_symbol`` keeps the SDK's
+  rewrite for requests.
 - There are no perpetuals and no funding: ``funding_history`` returns nothing.
 - Mainnet REST is ``https://api.templedigitalgroup.com``; testnet is
   ``https://api-testnet.templedigitalgroup.com`` (SDK config).
@@ -39,6 +44,7 @@ from ..core.venue import MarketDataAdapter, VenueAuthError, VenueRequestError
 MAINNET_BASE_URL = "https://api.templedigitalgroup.com"
 TESTNET_BASE_URL = "https://api-testnet.templedigitalgroup.com"
 API_KEY_ENV = "TEMPLE_API_KEY"
+TAKER_FEE = Decimal("0.0001")  # 1 bp, Temple help center, "Fees & Rebates"
 
 
 def _dec(value: object) -> Decimal:
@@ -123,38 +129,44 @@ class TempleAdapter(MarketDataAdapter):
             self._client = None
 
     async def markets(self) -> list[Market]:
-        """Markets that settled anything in the last 24 hours (the keyless list we have)."""
-        vol = await self.settled_volume(24)
+        """Every listed market with a key (from the ticker); without one, those that settled in 24 h."""
+        if self._key:
+            raw = await self._get("/api/v1/market/ticker")
+            symbols = [t["symbol"] for t in self._list(raw, "tickers")]
+        else:
+            symbols = [mk["symbol"] for mk in (await self.settled_volume(24))["markets"]]
         out = []
-        for mk in vol["markets"]:
+        for symbol in symbols:
+            mk = {"symbol": symbol}
             base, _, quote = mk["symbol"].partition("/")
             out.append(Market(symbol=mk["symbol"], base=base, quote=quote, is_trading=True,
                               tick_size=Decimal(0), min_order_size=Decimal(0), size_step=Decimal(0),
                               min_notional=Decimal(0), max_leverage=Decimal(1), funding_interval_minutes=0))
         return out
 
+    @staticmethod
+    def _list(raw: object, field: str) -> list[dict]:
+        if not isinstance(raw, dict) or not isinstance(raw.get(field), list):
+            raise VenueRequestError(f"unexpected response, no {field!r} list: {raw!r}"[:300])
+        return raw[field]
+
     async def tickers(self, symbol: str | None = None) -> list[Ticker]:
+        """24h stats per market. Temple's ticker has no bid/ask; read ``order_book`` for those.
+        ``turnover_24h`` is Temple's own ``quote_volume_24h_usd``."""
         raw = await self._get("/api/v1/market/ticker", {"symbol": wire_symbol(symbol) if symbol else None})
-        rows = raw if isinstance(raw, list) else raw.get("data", raw) if isinstance(raw, dict) else []
-        rows = rows if isinstance(rows, list) else [rows]
         return [
             Ticker(
                 symbol=t["symbol"], last_price=_dec(t.get("last_price")), index_price=Decimal(0),
                 mark_price=Decimal(0), open_interest=Decimal(0), volume_24h=_dec(t.get("volume_24h")),
-                turnover_24h=Decimal(0), funding_rate=Decimal(0), next_funding_time=None,
-                best_bid=self._top(t.get("bid_price")), best_ask=self._top(t.get("ask_price")),
+                turnover_24h=_dec(t.get("quote_volume_24h_usd")), funding_rate=Decimal(0),
+                next_funding_time=None, best_bid=None, best_ask=None,
             )
-            for t in rows
+            for t in self._list(raw, "tickers")
         ]
-
-    @staticmethod
-    def _top(price: object) -> BookLevel | None:
-        p = _dec(price)
-        return BookLevel(price=p, size=Decimal(0)) if p > 0 else None
 
     async def order_book(self, symbol: str, depth: int = 50) -> OrderBook:
         raw = await self._get("/api/v1/market/orderbook", {"symbol": wire_symbol(symbol), "levels": depth})
-        book = raw.get("data", raw) if isinstance(raw, dict) else None
+        book = raw.get("orderbook") if isinstance(raw, dict) else None
         if not isinstance(book, dict) or "bids" not in book:
             raise VenueRequestError(f"unexpected orderbook response: {raw!r}")
         return OrderBook(
@@ -166,12 +178,11 @@ class TempleAdapter(MarketDataAdapter):
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:
         raw = await self._get("/api/v1/market/trades", {"symbol": wire_symbol(symbol), "limit": min(limit, 500)})
-        rows = raw if isinstance(raw, list) else raw.get("data", []) if isinstance(raw, dict) else []
         trades = [
             Trade(trade_id=str(t["trade_id"]), symbol=t.get("symbol", symbol),
                   side=Side.SELL if str(t.get("side", "")).lower() == "sell" else Side.BUY,
-                  price=_dec(t["price"]), size=_dec(t["quantity"]), timestamp=_ts(t["timestamp"]))
-            for t in rows
+                  price=_dec(t["price"]), size=_dec(t["quantity"]), timestamp=_ts(t["created_at"]))
+            for t in self._list(raw, "trades")
         ]
         return sorted(trades, key=lambda t: t.timestamp, reverse=True)
 

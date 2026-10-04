@@ -1,7 +1,7 @@
 """Daily spread study: how long cross-venue spreads live on Canton, and who closes them.
 
 Once a day (a systemd timer at a random hour, so the runs cover the clock) this snapshots every
-pool and book the collector prices, every ``--interval`` seconds for ``--duration`` seconds, and
+pool and book the collector prices (Temple's books too, when TEMPLE_API_KEY is set), every ``--interval`` seconds for ``--duration`` seconds, and
 tracks each round trip that clears ``MIN_ROUTE_USD`` after network costs: when it opened, how long
 it stood, and whether the pools traded while it did. One summary per run is appended to
 ``<out>/api/v1/spreads.json`` (the last 60 runs). Read-only, public sources, no keys.
@@ -82,6 +82,9 @@ async def sample(c: Collector) -> dict:
     await c._reserve_venues(books, cx)
     cc_usd = m.cc_usd(list(books[USDCX].values()), Decimal(1))
     _, ob_books, _ = await c._rocky_spot(books, cc_usd, Decimal(1))
+    _, t_books, _ = await c._temple_spot(books, Decimal(1))
+    for k, v in t_books.items():
+        ob_books.setdefault(k, {}).update(v)
     routes = []
     for r in m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd):
         pools = books[r["token"]]

@@ -254,7 +254,9 @@ def swap_cost_cc(venue: str, cc_in_usd: Decimal) -> Decimal:
     return SWAP_COST_CC_MEASURED.get(venue, SWAP_COST_CC)
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
-BOOK_TAKER_FEE = {"rocky": Decimal("0.00025")}
+BOOK_TAKER_FEE = {"rocky": Decimal("0.00025"),
+                  # Temple: 1 bp taker, 0.5 bp maker (help center, "Fees & Rebates", read 2026-10-04)
+                  "temple": Decimal("0.0001")}
 
 
 @dataclass(frozen=True)
@@ -316,28 +318,30 @@ class DollarRoutes:
     """
 
     def __init__(self, pools: dict[str, VenuePool], stable: dict[str, VenuePool],
-                 book: BookVenue | None, usdcx_usd: Decimal) -> None:
-        self.pools, self.stable, self.book, self.usdcx_usd = pools, stable, book, usdcx_usd
+                 books: dict[str, BookVenue], usdcx_usd: Decimal) -> None:
+        self.pools, self.stable, self.books, self.usdcx_usd = pools, stable, books, usdcx_usd
 
     @property
     def venues(self) -> list[str]:
-        return sorted(self.pools) + ([self.book.venue] if self.book else [])
+        return sorted(self.pools) + sorted(self.books)
 
     def swaps(self, venue: str) -> int:
-        return 1 if self.book and venue == self.book.venue else 2
+        return 1 if venue in self.books else 2
 
     def buy(self, venue: str, usd: Decimal) -> Decimal | None:
         """Token received for ``usd`` dollars."""
-        if self.book and venue == self.book.venue:
-            return self.book.buy_base(usd / self.book.quote_usd)
+        if venue in self.books:
+            b = self.books[venue]
+            return b.buy_base(usd / b.quote_usd)
         _, cc, _ = best_leg(self.stable, False, usd / self.usdcx_usd)
         return self.pools[venue].out(True, cc)
 
     def sell(self, venue: str, qty: Decimal) -> Decimal | None:
         """Dollars received for ``qty`` of the token."""
-        if self.book and venue == self.book.venue:
-            got = self.book.sell_base(qty)
-            return None if got is None else got * self.book.quote_usd
+        if venue in self.books:
+            b = self.books[venue]
+            got = b.sell_base(qty)
+            return None if got is None else got * b.quote_usd
         cc = self.pools[venue].out(False, qty)
         _, usdcx, _ = best_leg(self.stable, True, cc)
         return usdcx * self.usdcx_usd
@@ -391,12 +395,12 @@ def usd_round_trip(routes: DollarRoutes, buy_on: str, sell_on: str, cc_in_usd: D
 
 def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]:
     """Round trips that touch an order book, in the same shape as ``scan`` rows."""
-    if not routes.book:
+    if not routes.books:
         return []
     found = []
     for buy in routes.venues:
         for sell in routes.venues:
-            if buy == sell or routes.book.venue not in (buy, sell):
+            if buy == sell or not ({buy, sell} & set(routes.books)):
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
             x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
             # a pool route is the CC/USDCx leg (taken at the default cost) plus the venue's own swap
@@ -404,7 +408,7 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
             cost_cc = sum(swap_cost_cc(v, cc_in_usd) + (stable_leg if routes.swaps(v) == 2 else 0)
                           for v in (buy, sell))
             net_usd = g - cost_cc * cc_in_usd
-            fp = "|".join(routes.book.fingerprint() if v == routes.book.venue else fingerprint(routes.pools[v])
+            fp = "|".join(routes.books[v].fingerprint() if v in routes.books else fingerprint(routes.pools[v])
                           for v in (buy, sell))
             found.append({
                 "token": token, "buy_on": buy, "sell_on": sell,

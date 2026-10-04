@@ -125,6 +125,7 @@ class Collector:
                          "poolparty": PoolPartyPublicData(), "temple": TempleAdapter()}
         self.live: set[str] = set()
         self.cc_usd_last = Decimal(0)
+        self.temple_priced = False
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -264,9 +265,49 @@ class Collector:
                 volume += t.turnover_24h * q_usd
                 if k in out:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
-            return out, kept, float(volume)
+            return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, b in kept.items()},
+                    float(volume))
         except Exception as exc:  # noqa: BLE001
             self._drop("rocky", exc)
+            return {}, {}, None
+
+    async def _temple_spot(self, books, usdcx_usd) -> tuple[dict, dict, dict | None]:
+        """Temple's USDCx books, in the same shape as Rocky's, plus its CC/USDCx quote for the premium.
+
+        Needs TEMPLE_API_KEY; without it Temple stays volume-only (settled volume needs no key).
+        Volume is not taken from here: the keyless settled-volume route already counts it.
+        """
+        temple = await self._venue("temple")
+        self.temple_priced = False
+        if temple is None or not temple.has_key:
+            return {}, {}, None
+        try:
+            out, kept, cc = {}, {}, None
+            for t in await temple.tickers():
+                base, _, quote = t.symbol.partition("/")
+                k = m.key(base)
+                if quote != "USDCx" or (k not in books and k != CC):
+                    continue
+                book = await temple.order_book(t.symbol, 200)
+                if book.mid_price is None:
+                    continue
+                depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, usdcx_usd)
+                info = {"symbol": t.symbol, "quote": USDCX, "price_usd": r(book.mid_price * usdcx_usd, 8),
+                        "depth_usd": r(depth, 2),
+                        "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2),
+                        "volume_24h_usd": None}
+                if k == CC:
+                    cc = info
+                    continue
+                out[k] = {"temple": info}
+                kept[k] = {"temple": m.BookVenue("temple", t.symbol,
+                                                 tuple((lv.price, lv.size) for lv in book.bids),
+                                                 tuple((lv.price, lv.size) for lv in book.asks),
+                                                 usdcx_usd, m.BOOK_TAKER_FEE["temple"])}
+            self.temple_priced = bool(out)
+            return out, kept, cc
+        except Exception as exc:  # noqa: BLE001
+            self._drop("temple", exc)
             return {}, {}, None
 
     async def _perps(self, gecko, cc_usd) -> list[dict]:
@@ -325,8 +366,8 @@ class Collector:
         out = {}
         for sym, pools in books.items():
             quotes = [(cc_usd / p.mid, m.amm_depth_usd(p, cc_usd)) for p in pools.values()]
-            if sym in ob:
-                quotes.append((Decimal(str(ob[sym]["price_usd"])), Decimal(str(ob[sym]["depth_usd"]))))
+            for info in ob.get(sym, {}).values():
+                quotes.append((Decimal(str(info["price_usd"])), Decimal(str(info["depth_usd"]))))
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
         return out
 
@@ -345,8 +386,13 @@ class Collector:
         for v in VENUES:
             vol = own.get(v["id"]) if v["id"] in own else llama.get(v.get("llama"))
             live = v["status"] != "priced" or v["id"] in ("cantex", "tradecraft") or v["id"] in self.live
-            rows.append({k: v[k] for k in ("id", "name", "kind", "note")} | {
-                "status": v["status"] if live else "down",
+            status = v["status"] if live else "down"
+            note = v["note"]
+            if v["id"] == "temple" and self.temple_priced:
+                status = "priced"
+                note = "Order books from Temple's API (account key); settled volume per market. Taker fee 1 bp."
+            rows.append({k: v[k] for k in ("id", "name", "kind")} | {
+                "note": note, "status": status,
                 "volume_24h_usd": r(vol, 2) if vol is not None else None})
         spot = [x for x in rows if x["kind"] != "Perpetuals" and x["volume_24h_usd"]]
         total = sum(x["volume_24h_usd"] for x in spot)
@@ -520,6 +566,11 @@ class Collector:
         self.cc_usd_last = cc_usd
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
+        t_ob, t_books, temple_cc = await self._temple_spot(books, usdcx_usd)
+        for k, v in t_ob.items():
+            ob.setdefault(k, {}).update(v)
+        for k, v in t_books.items():
+            ob_books.setdefault(k, {}).update(v)
         perps = await self._perps(gecko, cc_usd)
         prices = self._prices(books, cc_usd, ob)
 
@@ -528,7 +579,7 @@ class Collector:
         own = self._own_series()
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
-        premium = self._premium(books, cc_usd, gecko, ob, prices)
+        premium = self._premium(books, cc_usd, gecko, ob, prices, temple_cc)
         dollar = {k: m.DollarRoutes(books[k], stable, b, usdcx_usd) for k, b in ob_books.items()}
         cc_pairs = self._execution(books, cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
@@ -550,14 +601,16 @@ class Collector:
                                                   "pairs": execution})
         write_json(self.api / "scan.json", {"t": now, "round_trip_cost_cc": float(m.ROUND_TRIP_COST_CC),
                                             "swap_cost_cc": {v: float(m.swap_cost_cc(v, cc_usd)) for v in
-                                                             ("cantex", "tradecraft", "oneswap", "poolparty", "rocky")},
+                                                             ("cantex", "tradecraft", "oneswap", "poolparty", "rocky",
+                                                              "temple")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
         write_json(self.api / "lp.json", {"t": now, "pools": lp})
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
-            "books": {k: m.book_to_json(b, ob[k]["quote"]) for k, b in ob_books.items()}})
+            "books": {k: {v: m.book_to_json(b, ob[k][v]["quote"]) for v, b in vs.items()}
+                      for k, vs in ob_books.items()}})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
@@ -671,12 +724,12 @@ class Collector:
                              "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
                              "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
             vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0) + temple_vol.get(sym, 0.0)
-            if sym in ob:
+            for v, info in ob.get(sym, {}).items():
                 # a book's liquidity is what rests within 1% of mid, not a pool's full reserves
-                venues["rocky"] = {"price_usd": ob[sym]["price_usd"], "liquidity_usd": ob[sym]["depth_usd"],
-                                   "depth_1pct_usd": ob[sym]["depth_usd"], "market": ob[sym]["symbol"],
-                                   "spread_bps": ob[sym]["spread_bps"]}
-                vol += ob[sym]["volume_24h_usd"] or 0
+                venues[v] = {"price_usd": info["price_usd"], "liquidity_usd": info["depth_usd"],
+                             "depth_1pct_usd": info["depth_usd"], "market": info["symbol"],
+                             "spread_bps": info["spread_bps"]}
+                vol += info["volume_24h_usd"] or 0
             if "tradecraft" in pools:
                 vol += sum(v for k, v in tc_vol.items()
                            if k.upper().replace("TC ", "").replace(" LP", "") in
@@ -698,7 +751,7 @@ class Collector:
             })
         return sorted(out, key=lambda t: -(t["liquidity_usd"] or 0))
 
-    def _premium(self, books, cc_usd, gecko, ob, prices) -> list[dict]:
+    def _premium(self, books, cc_usd, gecko, ob, prices, temple_cc=None) -> list[dict]:
         rows = []
         h = self.history
         n = len(h["t"])
@@ -728,8 +781,10 @@ class Collector:
                 for v, p in pools.items():
                     pv = m.premium(cc_usd / p.mid, Decimal(str(ref)))
                     per_venue[v] = r(pv, 6)
-            if sym in ob:
-                per_venue["rocky"] = r(m.premium(Decimal(str(ob[sym]["price_usd"])), Decimal(str(ref))), 6)
+            for v, info in ob.get(sym, {}).items():
+                per_venue[v] = r(m.premium(Decimal(str(info["price_usd"])), Decimal(str(ref))), 6)
+            if sym == CC and temple_cc:
+                per_venue["temple"] = r(m.premium(Decimal(str(temple_cc["price_usd"])), Decimal(str(ref))), 6)
             keep(sym, prem)
             rows.append({
                 "key": sym,
@@ -775,7 +830,7 @@ class Collector:
                 "key": sym + ":USD", "kind": "usd", "token": sym,
                 "symbol": next(iter(books[sym].values())).token,
                 "venues": routes.venues, "swaps": {v: routes.swaps(v) for v in routes.venues},
-                "book": routes.book.symbol, "book_fee": float(routes.book.fee),
+                "books": {v: {"market": b.symbol, "fee": float(b.fee)} for v, b in routes.books.items()},
                 "rows": rows,
             })
         return out
