@@ -6,6 +6,7 @@ from .core.models import (
     FundingRate,
     Instrument,
     Market,
+    Order,
     OrderBook,
     Pool,
     Quote,
@@ -16,7 +17,9 @@ from .core.models import (
 )
 from .core.venue import (
     MarketDataAdapter,
+    OrderTradingAdapter,
     PoolDataAdapter,
+    TradingDisabledError,
     VenueAdapter,
     VenueAuthError,
     VenueError,
@@ -50,7 +53,10 @@ __all__ = [
     "FundingRate",
     "Instrument",
     "Market",
+    "Order",
     "OrderBook",
+    "OrderTradingAdapter",
+    "TradingDisabledError",
     "Pool",
     "Quote",
     "Side",

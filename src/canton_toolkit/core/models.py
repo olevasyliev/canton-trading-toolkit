@@ -184,3 +184,17 @@ class FundingRate:
     symbol: str
     rate: Decimal
     timestamp: datetime
+
+
+@dataclass(frozen=True)
+class Order:
+    """A resting or recently placed limit order on an order-book venue."""
+
+    order_id: str
+    symbol: str
+    side: Side
+    price: Decimal
+    quantity: Decimal
+    status: str
+    created_at: datetime | None = None
+    raw: dict | None = None  # the venue's own record, for fields this model does not carry

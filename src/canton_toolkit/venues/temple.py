@@ -25,6 +25,22 @@ Venue-shape notes:
   both and answers with ``CC/USDCx`` either way. ``wire_symbol`` keeps the SDK's
   rewrite for requests.
 - There are no perpetuals and no funding: ``funding_history`` returns nothing.
+
+Trading (``OrderTradingAdapter``), off unless the adapter is built with
+``trading=True``:
+
+- Routes from the SDK: ``POST /api/trading/orders`` (limit, optional
+  ``post_only``, ``expires_at``), ``POST /api/trading/orders/{id}/cancel``,
+  ``POST /api/trading/orders/cancel-all``, ``GET /api/trading/orders/active``,
+  ``GET /api/trading/balances``, ``GET /api/trading/delegation``.
+- The read routes were verified live on 2026-10-04; empty lists come back as
+  ``null``, which is read as empty. **The order, cancel and cancel-all
+  responses are not yet verified** (no order has been placed through this
+  adapter); they are parsed defensively and the venue's record is kept in
+  ``Order.raw``.
+- Before any order fills, the account needs a linked wallet with a trading
+  delegation, funds deposited, and a prepaid fee balance in USDCx;
+  ``trading_status`` reports all three.
 - Mainnet REST is ``https://api.templedigitalgroup.com``; testnet is
   ``https://api-testnet.templedigitalgroup.com`` (SDK config).
 """
@@ -38,8 +54,8 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import BookLevel, FundingRate, Market, OrderBook, Side, Ticker, Trade
-from ..core.venue import MarketDataAdapter, VenueAuthError, VenueRequestError
+from ..core.models import Balance, BookLevel, FundingRate, Instrument, Market, Order, OrderBook, Side, Ticker, Trade
+from ..core.venue import OrderTradingAdapter, TradingDisabledError, VenueAuthError, VenueRequestError
 
 MAINNET_BASE_URL = "https://api.templedigitalgroup.com"
 TESTNET_BASE_URL = "https://api-testnet.templedigitalgroup.com"
@@ -67,8 +83,8 @@ def _rfc3339(t: datetime) -> str:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class TempleAdapter(MarketDataAdapter):
-    """Read-only Temple market data: settled volume without a key, books and tickers with one."""
+class TempleAdapter(OrderTradingAdapter):
+    """Temple: settled volume without a key; books, tickers and (opt-in) trading with one."""
 
     def __init__(
         self,
@@ -76,10 +92,12 @@ class TempleAdapter(MarketDataAdapter):
         api_key: str | None = None,
         base_url: str = MAINNET_BASE_URL,
         client: httpx.AsyncClient | None = None,
+        trading: bool = False,
     ) -> None:
         self._key = api_key if api_key is not None else os.getenv(API_KEY_ENV)
         self._base = base_url.rstrip("/")
         self._client = client
+        self._trading = trading
 
     @property
     def has_key(self) -> bool:
@@ -103,6 +121,23 @@ class TempleAdapter(MarketDataAdapter):
         if resp.status_code >= 400:
             raise VenueRequestError(f"GET {path}: HTTP {resp.status_code}: {resp.text.strip()[:200]}")
         return resp.json()
+
+    async def _post(self, path: str, body: dict | None = None) -> object:
+        if not self._trading:
+            raise TradingDisabledError(f"POST {path}: build TempleAdapter(trading=True) to trade")
+        if self._client is None:
+            raise VenueRequestError("adapter is not connected; call connect() first")
+        if not self._key:
+            raise VenueAuthError(f"POST {path}: Temple trading needs an API key ({API_KEY_ENV})")
+        try:
+            resp = await self._client.post(f"{self._base}{path}", json=body or {}, headers={"X-API-Key": self._key})
+        except httpx.HTTPError as exc:
+            raise VenueRequestError(f"POST {path}: {exc}") from exc
+        if resp.status_code in (401, 403):
+            raise VenueAuthError(f"POST {path}: HTTP {resp.status_code}: {resp.text.strip()[:200]}")
+        if resp.status_code >= 400:
+            raise VenueRequestError(f"POST {path}: HTTP {resp.status_code}: {resp.text.strip()[:300]}")
+        return resp.json() if resp.content.strip() else {}
 
     # === settled volume (no key) =========================================
 
@@ -188,3 +223,89 @@ class TempleAdapter(MarketDataAdapter):
 
     async def funding_history(self, symbol: str, limit: int = 50) -> list[FundingRate]:
         return []
+
+    # === trading =========================================================
+
+    async def trading_status(self) -> dict:
+        """What stands between this account and a fill: linked wallet, delegation, fee balance."""
+        deleg = await self._get("/api/trading/delegation")
+        bal = await self._get("/api/trading/balances")
+        fees = (bal or {}).get("fee_balances") or []
+        fee_available = sum((_dec(f.get("available")) for f in fees), Decimal(0))
+        linked = (deleg or {}).get("linked_parties") or []
+        delegations = (deleg or {}).get("delegations") or []
+        return {
+            "linked_parties": len(linked),
+            "delegations": len(delegations),
+            "fee_available_usdcx": fee_available,
+            "ready": bool(linked) and bool(delegations) and fee_available > 0,
+        }
+
+    async def balances(self) -> list[Balance]:
+        raw = await self._get("/api/trading/balances")
+        return [
+            Balance(instrument=Instrument(admin="", id=b["asset"]), symbol=b["asset"], name=b["asset"],
+                    unlocked=_dec(b.get("unlocked")), locked=_dec(b.get("locked")) + _dec(b.get("in_flight")))
+            for b in ((raw or {}).get("balances") or [])
+        ]
+
+    async def open_orders(self, symbol: str | None = None) -> list[Order]:
+        raw = await self._get("/api/trading/orders/active", {"symbol": wire_symbol(symbol) if symbol else None})
+        return [self._order(o) for o in ((raw or {}).get("orders") or [])]
+
+    @staticmethod
+    def _order(o: dict, fallback: dict | None = None) -> Order:
+        """One order record; ``fallback`` fills what an unverified response may leave out."""
+        f = fallback or {}
+        side = str(o.get("side", f.get("side", ""))).lower()
+        stamp = o.get("created_at")
+        return Order(
+            order_id=str(o.get("order_id") or o.get("id") or o.get("request_id") or ""),
+            symbol=o.get("symbol", f.get("symbol", "")),
+            side=Side.SELL if side == "sell" else Side.BUY,
+            price=_dec(o.get("price", f.get("price"))),
+            quantity=_dec(o.get("quantity", f.get("quantity"))),
+            status=str(o.get("status", "submitted")),
+            created_at=_ts(stamp) if stamp else None,
+            raw=o,
+        )
+
+    async def place_limit_order(
+        self,
+        symbol: str,
+        side: Side,
+        quantity: Decimal,
+        price: Decimal,
+        *,
+        post_only: bool = False,
+        expires_at: datetime | None = None,
+    ) -> Order:
+        if quantity <= 0 or price <= 0:
+            raise VenueRequestError("quantity and price must be positive")
+        body: dict = {"symbol": wire_symbol(symbol), "side": side.value, "quantity": float(quantity),
+                      "price": float(price), "order_type": "limit"}
+        if post_only:
+            body["order_subtype"] = "post_only"
+        if expires_at:
+            body["expires_at"] = _rfc3339(expires_at)
+        raw = await self._post("/api/trading/orders", body)
+        record = raw.get("order", raw) if isinstance(raw, dict) else {}
+        return self._order(record if isinstance(record, dict) else {}, fallback=body | {"symbol": symbol})
+
+    async def cancel_order(self, order_id: str) -> bool:
+        if not order_id:
+            raise VenueRequestError("order_id is required")
+        raw = await self._post(f"/api/trading/orders/{order_id}/cancel")
+        return bool(isinstance(raw, dict) and raw.get("success", True))
+
+    async def cancel_all(self, symbol: str | None = None) -> int:
+        raw = await self._post("/api/trading/orders/cancel-all", {"symbol": wire_symbol(symbol)} if symbol else None)
+        if not isinstance(raw, dict):
+            return 0
+        for k in ("cancelled_count", "canceled_count", "count", "cancelled", "canceled"):
+            v = raw.get(k)
+            if isinstance(v, int):
+                return v
+            if isinstance(v, list):
+                return len(v)
+        return 0

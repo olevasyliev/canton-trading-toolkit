@@ -3,7 +3,7 @@
 An open-source algorithmic-trading toolkit for the [Canton Network](https://www.canton.network/).
 
 The core (`canton_toolkit.core`) is venue-agnostic: a small typed domain model
-and three adapter interfaces, all with a shared `VenueError` hierarchy.
+and four adapter interfaces, all with a shared `VenueError` hierarchy.
 
 - `PoolDataAdapter` — read and price an AMM: `Instrument`, `Pool`, `Quote`.
 - `VenueAdapter` — a `PoolDataAdapter` you can also trade: `Balance`,
@@ -11,21 +11,30 @@ and three adapter interfaces, all with a shared `VenueError` hierarchy.
 - `MarketDataAdapter` — read-only market state for venues shaped as a symbol
   and a book rather than a pool and a swap: `Market`, `OrderBook`, `Trade`,
   `Ticker`, `FundingRate`.
+- `OrderTradingAdapter` — a `MarketDataAdapter` you can also trade: limit
+  orders (post-only, with expiry), cancels, open orders, balances. Trading is
+  off unless the adapter is built with `trading=True`, so a market-data reader
+  holding the same key can never place an order.
 
-Four venues, three market structures, one client:
+Eight venues, four market structures, one client:
 
 | Adapter | Venue | Shape | Surface |
 |---|---|---|---|
-| `CantexAdapter` | [Cantex](https://cantex.io/) | spot AMM | read + swap, live on mainnet |
-| `TradecraftAdapter` | [Tradecraft](https://tradecraft.fi/) | spot AMM | read + pricing, live on mainnet |
-| `DexRefAdapter` | [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation) | spot order book + RFQ | read + swap, live on its hosted testnet |
-| `EkidenAdapter` | [Ekiden](https://ekiden.fi/) | perpetual futures | market data only |
+| `TempleAdapter` | [Temple](https://templedigitalgroup.com/) | spot order book | settled volume without a key; ticker, book and trades with an account key; limit orders and cancels, opt-in (order path awaiting its first live run) |
+| `CantexAdapter` | [Cantex](https://cantex.io/) | spot AMM | read + swap, mainnet |
+| `CantexPublicData` | [Cantex](https://cantex.io/) | spot AMM | keyless reserves, volume, candles and tickers, mainnet |
+| `RockyAdapter` | [Rocky](https://rocky.exchange/) | spot and perp order books | market data, mainnet, no key |
+| `TradecraftAdapter` | [Tradecraft](https://tradecraft.fi/) | spot AMM | read + pricing, mainnet |
+| `OneSwapPublicData` | [OneSwap](https://oneswap.cc/) | spot AMM | keyless reserves, mainnet |
+| `PoolPartyPublicData` | [Pool Party](https://cantonwallet.com/) | spot AMM | keyless reserves and volume, mainnet |
+| `EkidenAdapter` | [Ekiden](https://ekiden.fi/) | perpetual futures | market data, mainnet (testnet available) |
+| `DexRefAdapter` | [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation) | spot order book + RFQ | read + swap, its hosted testnet |
 
 `CantexAdapter` wraps the official
 [`cantex_sdk`](https://github.com/caviarnine/cantex_sdk) async client, so auth,
 signing and transport live in the SDK and the adapter only translates its models
-and exceptions. The other three venues ship no Python SDK and are called directly
-over HTTP. Every integration point is mapped to the source or the live response
+and exceptions. The other venues ship no Python SDK (or, like Temple, only a
+JavaScript one) and are called directly over HTTP. Every integration point is mapped to the source or the live response
 it came from in [`SOURCES.md`](SOURCES.md).
 
 ## Install
@@ -34,7 +43,7 @@ it came from in [`SOURCES.md`](SOURCES.md).
 and pulled directly from GitHub:
 
 ```bash
-pip install "canton_toolkit @ git+https://github.com/<owner>/canton_toolkit"
+pip install "canton_toolkit @ git+https://github.com/olevasyliev/canton-trading-toolkit"
 # or, from a checkout:
 pip install -e ".[dev]"
 ```
@@ -50,6 +59,8 @@ are the SDK's own:
 | `CANTEX_TRADING_KEY` | for swaps | Intent-trading secp256k1 private key (hex). Required for `swap()`. |
 | `CANTEX_BASE_URL` | no | API base URL. Defaults to `https://api.testnet.cantex.io`. |
 | `TRADECRAFT_BASE_URL` | no | Tradecraft API base. Defaults to mainnet, `https://api.tradecraft.fi/v1`. Reading it needs no credentials. |
+| `TEMPLE_API_KEY` | for Temple books | Account key from the Temple app (Settings > API Keys). Settled volume needs none. |
+| `EKIDEN_BASE_URL` | no | Ekiden gateway. Defaults to mainnet, `https://api.ekiden.fi`. |
 
 ## Usage
 
@@ -70,6 +81,25 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Market data from an order-book venue, no key needed:
+
+```python
+from canton_toolkit import RockyAdapter
+
+async def top_of_book():
+    async with RockyAdapter() as rocky:          # RockyAdapter("perp") for perpetuals
+        book = await rocky.order_book("CBTC-USDCX", 20)
+        print(book.best_bid, book.best_ask, book.mid_price)
+```
+
+## Live showcase
+
+[Canton Venues](https://cantonvenues.com) runs on this toolkit
+([`examples/canton_venues`](examples/canton_venues)): prices for every token across
+the venues above, Canton's premium to outside markets, best execution by trade size
+across pools and order books, a cross-venue spread scanner, a daily study of how fast
+spreads close, an open JSON API and an MCP server for AI agents.
 
 ## Run tests
 
@@ -106,8 +136,25 @@ either way).
 
 ## Status
 
-Live-validated on all four venues. Tests are fully offline and run against the
+Live-validated on every venue. Tests are fully offline and run against the
 real response shapes captured from each venue.
+
+- **Temple** (mainnet, 2026-10-04) — settled volume per market without a key;
+  ticker, order book (up to 200 levels) and trades with an account key. The live
+  payloads differ from the types in Temple's own JavaScript SDK, and the adapter
+  follows the live ones; see [`SOURCES.md`](SOURCES.md). Trading: balances,
+  open orders and `trading_status` (linked wallet, delegation, fee balance) are
+  verified live; placing and cancelling are implemented from the SDK and
+  `scripts/temple_order_smoke.py` (dry run unless `--execute`; a post-only
+  order priced never to fill, cancelled at once) is the check that will close
+  them, on Temple's testnet first.
+- **Rocky** (mainnet, 2026-10-03) — spot and perp markets, 24h tickers, depth and
+  trades over its public Binance-style API. The ticker reports bid and ask as 0,
+  so top of book comes from depth.
+- **OneSwap and Pool Party** (mainnet, 2026-10-03) — pool reserves (and, for Pool
+  Party, per-pool volume) without a key, priced locally as constant product.
+- **Ekiden** moved to mainnet as the default on 2026-10-03 (live since 2026-09-08);
+  the same routes answer there as on testnet.
 
 - **Cantex** (mainnet, 2026-07-17) — challenge-response auth, pools, quoting,
   and an executed swap with real funds: 10 CC sold for 1.2981357151 USDCx on

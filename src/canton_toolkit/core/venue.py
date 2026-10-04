@@ -8,6 +8,8 @@ Three interfaces, because Canton already has three venue shapes:
   swaps, transfers.
 - ``MarketDataAdapter`` — read-only market state for venues whose shape is a
   symbol and a book rather than a pool and a swap.
+- ``OrderTradingAdapter`` — a ``MarketDataAdapter`` you can also trade: limit
+  orders, cancels, open orders and balances on an order-book venue.
 
 Concrete adapters wrap a venue SDK or HTTP API and translate its exceptions
 into ``VenueError`` subclasses so callers never depend on venue-specific error
@@ -17,6 +19,7 @@ types.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 
 from .models import (
@@ -24,9 +27,11 @@ from .models import (
     FundingRate,
     Instrument,
     Market,
+    Order,
     OrderBook,
     Pool,
     Quote,
+    Side,
     SwapResult,
     Ticker,
     Trade,
@@ -43,6 +48,10 @@ class VenueAuthError(VenueError):
 
 class VenueRequestError(VenueError):
     """A request to the venue failed (bad request, timeout, transport error)."""
+
+
+class TradingDisabledError(VenueError):
+    """A trading call on an adapter that was not explicitly opened for trading."""
 
 
 class PoolDataAdapter(ABC):
@@ -157,3 +166,41 @@ class MarketDataAdapter(ABC):
     @abstractmethod
     async def funding_history(self, symbol: str, limit: int = 50) -> list[FundingRate]:
         """Settled funding rates, most recent first."""
+
+
+class OrderTradingAdapter(MarketDataAdapter):
+    """Trade an order-book venue: limit orders, cancels, open orders, balances.
+
+    Implementations must refuse every state-changing call unless trading was
+    enabled explicitly at construction, so a market-data consumer holding the
+    same credentials can never place an order by accident.
+    """
+
+    @abstractmethod
+    async def balances(self) -> list[Balance]:
+        """Trading balances held at the venue."""
+
+    @abstractmethod
+    async def open_orders(self, symbol: str | None = None) -> list[Order]:
+        """Orders currently resting, for one symbol or all."""
+
+    @abstractmethod
+    async def place_limit_order(
+        self,
+        symbol: str,
+        side: Side,
+        quantity: Decimal,
+        price: Decimal,
+        *,
+        post_only: bool = False,
+        expires_at: datetime | None = None,
+    ) -> Order:
+        """Place a limit order. ``post_only`` rejects it rather than let it take liquidity."""
+
+    @abstractmethod
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel one order; True when the venue confirms."""
+
+    @abstractmethod
+    async def cancel_all(self, symbol: str | None = None) -> int:
+        """Cancel every resting order, for one symbol or all; returns how many."""

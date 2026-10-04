@@ -373,3 +373,13 @@ Spot order books on Canton; the largest venue by volume.
   USDCx/USDA. `GET /api/fees` gives the fee asset (USDCx) but no rate.
 - **Fees:** taker 1 bp, maker 0.5 bp, prepaid in USDCx; deposits/withdrawals 5-12 CC via partner wallets
   (help.templedigitalgroup.com/en/articles/12810727-fees-rebates, read 2026-10-04).
+
+**Temple trading (`TempleAdapter(trading=True)`).** Routes from SDK 2.1.10 `dist/api/index.js`:
+`POST /api/trading/orders` with `{symbol, side, quantity, price, order_type: "limit", order_subtype?:
+"post_only", expires_at?}` (numbers, as the SDK sends them), `POST /api/trading/orders/{id}/cancel`,
+`POST /api/trading/orders/cancel-all` with optional `{symbol}`. Read routes verified live 2026-10-04:
+`GET /api/trading/balances` → `{"balances": null | [...], "fee_balances": [{asset, available, in_flight,
+locked, updated_at}]}`; `GET /api/trading/delegation` → `{"delegations": [], "linked_parties": []}`;
+`GET /api/trading/orders/active` → `{"count", "has_more", "limit", "orders": null | [...], "total_count"}`.
+Empty lists arrive as `null`. Order, cancel and cancel-all responses are **unverified** until the first
+live order.

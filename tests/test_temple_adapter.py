@@ -107,3 +107,70 @@ async def test_markets_come_from_settled_volume() -> None:
 def test_wire_symbol_rewrites_only_the_cc_token() -> None:
     assert wire_symbol("CC/USDCx") == "Amulet/USDCx"
     assert wire_symbol("CBTC/USDCx") == "CBTC/USDCx"
+
+
+# === trading ===============================================================
+
+BALANCES_EMPTY = {"balances": None, "fee_balances": [
+    {"asset": "USDCx", "available": 5, "in_flight": 0, "locked": 0, "updated_at": "2026-10-03T13:42:20.523284Z"}]}
+DELEGATION_EMPTY = {"delegations": [], "linked_parties": []}
+ACTIVE_EMPTY = {"count": 0, "has_more": False, "limit": 50, "orders": None, "total_count": 0}
+
+
+def _trader(seen: list, responses: dict, trading: bool = True) -> TempleAdapter:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/api/exchange/settled_volume":
+            return httpx.Response(200, json=SETTLED)
+        body = responses.get((request.method, request.url.path))
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404, text="not found")
+    return TempleAdapter(api_key="k", trading=trading,
+                         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+async def test_trading_is_refused_unless_enabled() -> None:
+    from canton_toolkit import Side, TradingDisabledError
+    seen: list = []
+    async with _trader(seen, {}, trading=False) as temple:
+        n = len(seen)
+        with pytest.raises(TradingDisabledError):
+            await temple.place_limit_order("CC/USDCx", Side.BUY, Decimal(10), Decimal("0.05"))
+        with pytest.raises(TradingDisabledError):
+            await temple.cancel_all()
+    assert len(seen) == n  # nothing was sent
+
+
+async def test_null_lists_read_as_empty_and_status_explains_why_not_ready() -> None:
+    responses = {("GET", "/api/trading/balances"): BALANCES_EMPTY,
+                 ("GET", "/api/trading/delegation"): DELEGATION_EMPTY,
+                 ("GET", "/api/trading/orders/active"): ACTIVE_EMPTY}
+    async with _trader([], responses) as temple:
+        assert await temple.balances() == []
+        assert await temple.open_orders() == []
+        status = await temple.trading_status()
+    assert status == {"linked_parties": 0, "delegations": 0, "fee_available_usdcx": Decimal(5), "ready": False}
+
+
+async def test_limit_order_body_matches_the_sdk_and_survives_a_thin_response() -> None:
+    import json as _json
+
+    from canton_toolkit import Side
+    seen: list = []
+    responses = {("POST", "/api/trading/orders"): {"order_id": "o-1", "status": "open"}}
+    async with _trader(seen, responses) as temple:
+        order = await temple.place_limit_order("CC/USDCx", Side.SELL, Decimal("100"), Decimal("0.5"),
+                                               post_only=True, expires_at=datetime(2026, 10, 5, tzinfo=UTC))
+    body = _json.loads(seen[-1].content)
+    assert body == {"symbol": "Amulet/USDCx", "side": "sell", "quantity": 100.0, "price": 0.5,
+                    "order_type": "limit", "order_subtype": "post_only", "expires_at": "2026-10-05T00:00:00Z"}
+    assert seen[-1].headers["X-API-Key"] == "k"
+    # the response carried only an id and a status; the rest comes from what was sent
+    assert (order.order_id, order.status, order.side, order.price) == ("o-1", "open", Side.SELL, Decimal("0.5"))
+
+
+async def test_cancels_read_success_and_counts() -> None:
+    responses = {("POST", "/api/trading/orders/o-1/cancel"): {"success": True},
+                 ("POST", "/api/trading/orders/cancel-all"): {"cancelled": ["o-2", "o-3"]}}
+    async with _trader([], responses) as temple:
+        assert await temple.cancel_order("o-1") is True
+        assert await temple.cancel_all("CC/USDCx") == 2
