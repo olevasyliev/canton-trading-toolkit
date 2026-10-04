@@ -654,8 +654,10 @@ const VST = { priced: "Priced", volume: "Volume only", next: "Next", waiting: "W
 function renderVenues() {
   const d = D.venues, rows = d.venues || [];
   const spot = rows.filter((x) => x.kind !== "Perpetuals" && x.volume_24h_usd).sort((a, b) => b.volume_24h_usd - a.volume_24h_usd);
-  const total = d.spot_volume_24h_usd || 1, priced = rows.filter((x) => x.status === "priced").length;
-  $("venlead").innerHTML = `We read <b>${priced} of ${rows.length}</b> Canton venues live. They carry <b>${d.spot_priced_share == null ? "–" : Math.round(d.spot_priced_share * 100) + "%"}</b> of the spot volume we can see (${money(d.spot_volume_24h_usd)} in 24h; OneSwap and Silvana publish none) plus ${money(d.perp_volume_24h_usd)} of perps.`;
+  // Rocky's spot and perp books are two rows but one venue
+  const venue = (x) => x.id.replace(/_perp$/, ""), uniq = (xs) => new Set(xs.map(venue)).size;
+  const total = d.spot_volume_24h_usd || 1, priced = uniq(rows.filter((x) => x.status === "priced"));
+  $("venlead").innerHTML = `We read <b>${priced} of the ${uniq(rows)}</b> Canton venues we know of, live. They carry <b>${d.spot_priced_share == null ? "–" : Math.round(d.spot_priced_share * 100) + "%"}</b> of the spot volume we can see (${money(d.spot_volume_24h_usd)} in 24h; OneSwap and Silvana publish none) plus ${money(d.perp_volume_24h_usd)} of perps.`;
   $("venbar").innerHTML = `<p class="sub" style="margin:0 0 8px">Spot volume, last 24 hours. Hatched: volume we see but cannot price.</p>
     <div class="vbar">${spot.map((x) => `<i class="${x.status === "priced" ? "" : "off"}" style="width:${x.volume_24h_usd / total * 100}%;${x.status === "priced" ? "background:" + (VC[x.id] || "var(--text-3)") : ""}" title="${esc(x.name)} ${money(x.volume_24h_usd)}"></i>`).join("")}</div>
     <div class="vbarkey">${spot.map((x) => `<span>${x.status === "priced" ? `<i style="background:${VC[x.id]}"></i>` : `<i class="off" style="background:var(--line-2)"></i>`}${esc(x.name)} ${Math.round(x.volume_24h_usd / total * 100)}%</span>`).join("")}</div>`;
