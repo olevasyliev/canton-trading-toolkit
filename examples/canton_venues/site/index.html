@@ -91,15 +91,21 @@ button { font: inherit; color: inherit; }
 /* header */
 .head { border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 10; }
 .head .wrap { display: flex; align-items: center; gap: 28px; height: 64px; }
-.logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.01em; }
+.logo { flex-shrink: 0; white-space: nowrap; display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.01em; }
 .logo:hover { text-decoration: none; }
 .logo svg { width: 26px; height: 26px; }
-.nav { display: flex; gap: 24px; font-weight: 600; font-size: 14px; overflow-x: auto; scrollbar-width: none; }
+.nav { display: flex; gap: 20px; font-weight: 600; font-size: 14px; overflow-x: auto; scrollbar-width: none; }
 .nav a { color: var(--text); white-space: nowrap; }
 .nav a:hover { color: var(--accent); text-decoration: none; }
 .theme { margin-left: auto; border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 8px; height: 34px; padding: 0 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); flex-shrink: 0; }
 .theme:hover { color: var(--text); }
 .theme svg { width: 16px; height: 16px; }
+.tg { margin-left: auto; border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 8px; height: 34px; padding: 0 12px; display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
+.tg:hover { text-decoration: none; color: var(--accent); }
+.tg svg { width: 16px; height: 16px; color: #229ed9; }
+.tg + .theme { margin-left: 0; }
+.burger { display: none; border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 8px; width: 38px; height: 34px; align-items: center; justify-content: center; cursor: pointer; color: var(--text); flex-shrink: 0; padding: 0; }
+.burger svg { width: 18px; height: 18px; }
 
 /* title */
 .title { padding: 24px 0 18px; }
@@ -244,6 +250,25 @@ td.note { color: var(--text-2); font-size: 13px; white-space: normal; min-width:
 .apigrid span { color: var(--text-2); }
 pre.curl { margin: 16px 0 0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; color: var(--text); background: var(--bg-2); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
 
+/* contact */
+.contact { display: grid; grid-template-columns: 1fr 1.3fr; gap: 32px; align-items: start; }
+.contact .lead { color: var(--text-2); margin: 4px 0 18px; max-width: 46ch; }
+.tgbig { display: inline-flex; align-items: center; gap: 10px; background: #229ed9; color: #fff; border-radius: 10px; padding: 11px 18px; font-weight: 600; font-size: 14px; }
+.tgbig:hover { text-decoration: none; filter: brightness(1.06); }
+.tgbig svg { width: 18px; height: 18px; }
+.form { display: grid; gap: 12px; }
+.form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.form input, .form textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; width: 100%; }
+.form input:focus, .form textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.form textarea { min-height: 120px; resize: vertical; }
+.form .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.form .send { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.form button { border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 11px 20px; font-weight: 600; cursor: pointer; }
+.form button:disabled { opacity: .6; cursor: default; }
+.form .st { font-size: 13px; color: var(--text-2); }
+.form .st.ok { color: var(--up); } .form .st.err { color: var(--down); }
+
 /* footer */
 .foot { margin-top: 56px; border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--text-2); font-size: 13px; display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 32px; }
 .foot h4 { margin: 0 0 8px; color: var(--text); font-size: 14px; }
@@ -271,11 +296,39 @@ body:not(.tv) #tokenview { display: none; }
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid2 { grid-template-columns: 1fr; }
 }
+/* the section menu folds into a burger once it no longer fits on one line */
+@media (max-width: 1380px) {
+  .head .wrap { gap: 8px; }
+  .logo { margin-right: auto; }
+  .burger { display: flex; }
+  .theme { margin-left: 0; }
+  .nav { display: none; position: absolute; top: calc(100% + 6px); right: 24px; width: 240px; flex-direction: column; gap: 0; background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 32px rgba(13, 20, 33, .14); padding: 6px 18px; max-height: calc(100vh - 80px); overflow-y: auto; }
+  .head.open .nav { display: flex; }
+  .nav a { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .nav a:last-child { border-bottom: 0; }
+}
 @media (max-width: 720px) {
+  .nav { top: 100%; left: 0; right: 0; width: auto; border-width: 0 0 1px; border-radius: 0; padding: 6px 16px 12px; max-height: calc(100vh - 56px); }
   .wrap { padding: 0 16px; }
-  .head .wrap { gap: 16px; height: 56px; }
-  .nav { display: none; }
-  .theme span { display: none; }
+  .head .wrap { gap: 8px; height: 56px; }
+  .theme { padding: 0 10px; }
+  .theme span, .tg span { display: none; }
+  .tg { padding: 0 10px; }
+  .contact { grid-template-columns: 1fr; gap: 20px; }
+  .form .two { grid-template-columns: 1fr; }
+  /* alerts: time and kind on one line, the text under them */
+  #alertfeed tr { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  #alertfeed td { display: block; width: auto !important; padding: 0; border: 0; }
+  #alertfeed td:last-child { grid-column: 1 / -1; color: var(--text); }
+  /* trading pairs: one swipeable row instead of a wall of buttons */
+  #pairs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -18px 10px; padding: 0 18px; }
+  #pairs::-webkit-scrollbar { display: none; }
+  #pairs button { flex-shrink: 0; }
+  /* big numbers: the caption goes under the number */
+  .kpi small { display: block; margin: 4px 0 0; line-height: 1.45; }
+  .srow b { text-align: right; white-space: nowrap; }
+  /* a table wider than the screen fades at the edge it scrolls to */
+  .tablewrap.more { -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
   .cards { grid-template-columns: 1fr; }
   .map { height: 420px; }
   .hide-sm { display: none; }
@@ -283,7 +336,10 @@ body:not(.tv) #tokenview { display: none; }
   .apigrid { grid-template-columns: 1fr; }
   .apigrid div { grid-template-columns: 1fr; gap: 2px; }
   .foot { grid-template-columns: 1fr; }
-  .prow { grid-template-columns: 8.5em 1fr 4.6em; }
+  /* premium: name and value on top, the bar full width under them */
+  .prow { grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 6px; }
+  .prow .bar { grid-column: 1 / -1; grid-row: 2; }
+  .key { flex-wrap: wrap; gap: 6px 14px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
@@ -297,10 +353,12 @@ body:not(.tv) #tokenview { display: none; }
       <svg viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="3" fill="#16c784"/><rect x="14" y="1" width="11" height="7" rx="3" fill="#3861fb"/><rect x="14" y="10" width="11" height="15" rx="3" fill="var(--text)" opacity=".85"/><rect x="1" y="14" width="11" height="11" rx="3" fill="#ea3943"/></svg>
       Canton Venues
     </a>
-    <nav class="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#study">Spreads</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a>
+    <nav class="nav" id="nav" aria-label="Sections">
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#study">Spreads</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a><a href="#contact">Contact</a>
     </nav>
+    <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
+    <button class="burger" id="burger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
   </div>
 </header>
 
@@ -403,8 +461,27 @@ body:not(.tv) #tokenview { display: none; }
     </div>
   </section>
 
+  <section class="block" id="contact">
+    <div class="contact">
+      <div>
+        <h2 style="font-size:20px;margin:0">Contact</h2>
+        <p class="lead">A venue to add, a view you need, a bug, or you want to build on the data: write here and we reply. Alerts and the daily summary go to the Telegram channel.</p>
+        <a class="tgbig" href="https://t.me/cantonvenues" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg>Join @cantonvenues</a>
+      </div>
+      <form class="panel form" id="contactform" novalidate>
+        <div class="two">
+          <label>Name <input name="name" autocomplete="name" maxlength="120"></label>
+          <label>Email or Telegram <input name="contact" required maxlength="200" placeholder="So we can reply"></label>
+        </div>
+        <label>Message <textarea name="message" required maxlength="4000"></textarea></label>
+        <label class="hp" aria-hidden="true">Website <input name="website" tabindex="-1" autocomplete="off"></label>
+        <div class="send"><button type="submit">Send</button><span class="st" id="contactst" role="status"></span></div>
+      </form>
+    </div>
+  </section>
+
   <footer class="foot">
-    <div><h4>Canton Venues</h4><p>Built on <a href="https://github.com/olevasyliev/canton-trading-toolkit">canton_toolkit</a>, open source. Read-only: nothing here is signed or executed.</p><p id="updated"></p></div>
+    <div><h4>Canton Venues</h4><p>Built on <a href="https://github.com/olevasyliev/canton-trading-toolkit">canton_toolkit</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="#contact">Contact</a></p><p id="updated"></p></div>
     <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple and Rocky from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid. For an order book, liquidity is the dollars resting within 1% of mid.</p></div>
     <div><h4>Data</h4><p>Temple's API (account key), and the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple's volume comes from its own public settled-volume route.</p></div>
   </footer>
@@ -553,7 +630,8 @@ function renderMap() {
   document.querySelectorAll("[data-size]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.size === S.size));
   document.querySelectorAll("[data-color]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.color === S.color));
   const items = (D.tokens?.tokens || []).filter((t) => (t.liquidity_usd || 0) >= 1000 && t.key !== "USDCX")
-    .map((t) => ({ ...t, value: S.size === "liq" ? t.liquidity_usd : (t.volume_24h_usd || 0) })).filter((t) => t.value > 0);
+    .map((t) => ({ ...t, value: S.size === "liq" ? t.liquidity_usd : (t.volume_24h_usd || 0) })).filter((t) => t.value > 0)
+    .sort((a, b) => b.value - a.value).slice(0, W < 600 ? 12 : Infinity);
   if (!items.length || !window.d3) { box.innerHTML = ""; return; }
   const root = d3.hierarchy({ children: items }).sum((d) => d.value).sort((a, b) => b.value - a.value);
   d3.treemap().tile(d3.treemapSquarify.ratio(1.2)).size([W, H]).paddingInner(0).round(true)(root);
@@ -942,6 +1020,39 @@ $("theme").addEventListener("click", () => {
   paintThemeButton(); if (D.tokens) renderMap();
 });
 
+/* ---------- menu ---------- */
+$("burger").addEventListener("click", () => {
+  const open = document.querySelector(".head").classList.toggle("open");
+  $("burger").setAttribute("aria-expanded", open);
+});
+$("nav").addEventListener("click", (e) => { if (e.target.closest("a")) { document.querySelector(".head").classList.remove("open"); $("burger").setAttribute("aria-expanded", "false"); } });
+
+/* ---------- contact ---------- */
+$("contactform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, st = $("contactst"), btn = f.querySelector("button");
+  const body = Object.fromEntries(new FormData(f));
+  if (!body.contact.trim() || body.message.trim().length < 2) { st.className = "st err"; st.textContent = "Add a way to reply and a message."; return; }
+  btn.disabled = true; st.className = "st"; st.textContent = "Sending…";
+  try {
+    const r = await fetch("/api/contact", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.status === 429) throw new Error("Too many messages from here, try again in a minute.");
+    if (!r.ok) throw new Error("Could not send. Try again, or reach us in the Telegram channel.");
+    f.reset(); st.className = "st ok"; st.textContent = "Sent. Thank you, we will reply.";
+    try { window.umami?.track("contact-sent"); } catch (err) {}
+  } catch (err) { st.className = "st err"; st.textContent = err.message; }
+  btn.disabled = false;
+});
+
+/* ---------- wide tables: fade the edge they scroll to ---------- */
+function markWide() {
+  document.querySelectorAll(".tablewrap").forEach((w) => {
+    const upd = () => w.classList.toggle("more", w.scrollWidth - w.clientWidth - w.scrollLeft > 4);
+    if (!w.dataset.wide) { w.dataset.wide = 1; w.addEventListener("scroll", upd, { passive: true }); }
+    upd();
+  });
+}
+
 function render() {
   renderTop();
   if (D.tokens) { renderTable(); renderMap(); }
@@ -956,6 +1067,7 @@ function render() {
   renderAPI();
   route();
   save();
+  markWide();
 }
 
 document.addEventListener("click", (e) => {
@@ -973,8 +1085,9 @@ document.addEventListener("click", (e) => {
   if (b.dataset.lp) { S.lpSort = b.dataset.lp; renderLP(); }
   if (b.dataset.lpall) { S.lpAll = !S.lpAll; renderLP(); }
   save();
+  markWide();
 });
-let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (D.tokens) renderMap(); if (D.execution) renderExecution(); }, 150); });
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (D.tokens) renderMap(); if (D.execution) renderExecution(); markWide(); }, 150); });
 paintThemeButton();
 load();
 setInterval(load, 60000);

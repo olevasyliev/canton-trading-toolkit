@@ -1,0 +1,18 @@
+[Unit]
+Description=Canton Venues contact form: stores each message and forwards it to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+# TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID (the owner's chat with the bot); without them messages are only stored
+EnvironmentFile=-/opt/canton-venues/.env
+ExecStart=/opt/canton-venues/.venv/bin/python contact.py --host 127.0.0.1 --port 8098 --log /opt/canton-venues/contact.jsonl
+Restart=always
+RestartSec=10
+MemoryMax=60M
+CPUQuota=10%
+
+[Install]
+WantedBy=multi-user.target
