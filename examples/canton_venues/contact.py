@@ -95,6 +95,9 @@ def main() -> None:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     Handler.log_path = Path(args.log)
+    os.umask(0o077)  # messages carry people's contacts: owner-only file
+    if Handler.log_path.exists():
+        Handler.log_path.chmod(0o600)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
