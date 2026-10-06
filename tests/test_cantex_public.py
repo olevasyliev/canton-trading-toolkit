@@ -7,9 +7,9 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import CantexPublicData, Instrument
-from canton_toolkit.core.venue import VenueRequestError
-from canton_toolkit.venues.cantex_public import swap_output
+from cantonvenues import CantexPublicData, Instrument
+from cantonvenues.core.venue import VenueRequestError
+from cantonvenues.venues.cantex_public import swap_output
 
 CC = {"admin": "DSO::1220", "id": "Amulet", "symbol": "CC"}
 USD = {"admin": "usdc::1220", "id": "USDCx", "symbol": "USDCx"}

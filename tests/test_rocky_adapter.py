@@ -13,7 +13,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import RockyAdapter, Side, VenueRequestError
+from cantonvenues import RockyAdapter, Side, VenueRequestError
 
 SPOT_INFO = {
     "timezone": "UTC",

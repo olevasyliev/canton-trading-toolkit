@@ -499,7 +499,7 @@ def change(series: list[tuple[int, float]], now_ms: int, window_ms: int) -> floa
 
 
 def _cantex_out(cc: Decimal, tok: Decimal, fee: Decimal):
-    from canton_toolkit.venues.cantex_public import swap_output
+    from cantonvenues.venues.cantex_public import swap_output
 
     def out(sell_cc: bool, amount: Decimal) -> Decimal:
         return swap_output(cc, tok, amount, fee) if sell_cc else swap_output(tok, cc, amount, fee)
@@ -507,7 +507,7 @@ def _cantex_out(cc: Decimal, tok: Decimal, fee: Decimal):
 
 
 def _tradecraft_out(cc: Decimal, tok: Decimal, fee: Decimal):
-    from canton_toolkit.venues.tradecraft import swap_output
+    from cantonvenues.venues.tradecraft import swap_output
 
     def out(sell_cc: bool, amount: Decimal) -> Decimal:
         return swap_output(cc, tok, amount, fee) if sell_cc else swap_output(tok, cc, amount, fee)
@@ -515,7 +515,7 @@ def _tradecraft_out(cc: Decimal, tok: Decimal, fee: Decimal):
 
 
 def _cp_out(cc: Decimal, tok: Decimal, fee: Decimal):
-    from canton_toolkit import constant_product_output
+    from cantonvenues import constant_product_output
 
     def out(sell_cc: bool, amount: Decimal) -> Decimal:
         if sell_cc:

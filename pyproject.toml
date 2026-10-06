@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "canton_toolkit"
-version = "0.2.0"
-description = "Open-source algorithmic-trading toolkit for the Canton Network (Cantex venue connector)."
+name = "cantonvenues"
+version = "0.3.0"
+description = "Canton Venues SDK: the open-source Canton Algorithmic Trading Toolkit. One typed client for every Canton DEX venue."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ venues = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/canton_toolkit"]
+packages = ["src/cantonvenues"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

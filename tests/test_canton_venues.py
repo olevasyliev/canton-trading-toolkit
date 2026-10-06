@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "canto
 
 import model as m  # noqa: E402
 
-from canton_toolkit.venues.cantex_public import swap_output as cx_out  # noqa: E402
-from canton_toolkit.venues.tradecraft import swap_output as tc_out  # noqa: E402
+from cantonvenues.venues.cantex_public import swap_output as cx_out  # noqa: E402
+from cantonvenues.venues.tradecraft import swap_output as tc_out  # noqa: E402
 
 
 def cantex_pool(token, cc, tok, fee="0.0005"):
@@ -165,7 +165,7 @@ def test_change_ignores_a_one_bar_wick_at_the_start_of_the_window():
 
 
 def test_book_depth_counts_only_the_band_on_both_sides():
-    from canton_toolkit import BookLevel
+    from cantonvenues import BookLevel
     bids = [BookLevel(Decimal("99.5"), Decimal(2)), BookLevel(Decimal("98"), Decimal(100))]
     asks = [BookLevel(Decimal("100.5"), Decimal(1)), BookLevel(Decimal("102"), Decimal(100))]
     # mid 100, 1% band: 99.5*2 + 100.5*1, the far levels left out, in a quote worth $1.01

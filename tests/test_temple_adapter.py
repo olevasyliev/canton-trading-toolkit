@@ -13,8 +13,8 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import TempleAdapter, VenueAuthError
-from canton_toolkit.venues.temple import wire_symbol
+from cantonvenues import TempleAdapter, VenueAuthError
+from cantonvenues.venues.temple import wire_symbol
 
 SETTLED = {
     "start_time": "2026-10-02T14:14:11Z", "end_time": "2026-10-03T14:14:11Z",
@@ -129,7 +129,7 @@ def _trader(seen: list, responses: dict, trading: bool = True) -> TempleAdapter:
 
 
 async def test_trading_is_refused_unless_enabled() -> None:
-    from canton_toolkit import Side, TradingDisabledError
+    from cantonvenues import Side, TradingDisabledError
     seen: list = []
     async with _trader(seen, {}, trading=False) as temple:
         n = len(seen)
@@ -154,7 +154,7 @@ async def test_null_lists_read_as_empty_and_status_explains_why_not_ready() -> N
 async def test_limit_order_body_matches_the_sdk_and_survives_a_thin_response() -> None:
     import json as _json
 
-    from canton_toolkit import Side
+    from cantonvenues import Side
     seen: list = []
     responses = {("POST", "/api/trading/orders"): {"order_id": "o-1", "status": "open"}}
     async with _trader(seen, responses) as temple:

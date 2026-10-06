@@ -21,7 +21,7 @@ from cantex_sdk import (
     SwapQuote,
 )
 
-from canton_toolkit import (
+from cantonvenues import (
     Balance,
     CantexAdapter,
     Instrument,
@@ -31,7 +31,7 @@ from canton_toolkit import (
     VenueAuthError,
     VenueRequestError,
 )
-from canton_toolkit.venues.cantex import DEFAULT_BASE_URL
+from cantonvenues.venues.cantex import DEFAULT_BASE_URL
 
 # --- Public test key vectors (RFC 8032 Ed25519 / standard secp256k1); not secrets.
 ED25519_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"

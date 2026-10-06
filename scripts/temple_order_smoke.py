@@ -22,8 +22,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from canton_toolkit import Side, TempleAdapter, VenueError
-from canton_toolkit.venues.temple import MAINNET_BASE_URL, TESTNET_BASE_URL
+from cantonvenues import Side, TempleAdapter, VenueError
+from cantonvenues.venues.temple import MAINNET_BASE_URL, TESTNET_BASE_URL
 
 
 async def run(args: argparse.Namespace) -> int:

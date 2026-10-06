@@ -37,7 +37,7 @@ import httpx
 import model as m
 from model import CC, VenuePool
 
-from canton_toolkit import (
+from cantonvenues import (
     CantexPublicData,
     EkidenAdapter,
     OneSwapPublicData,

@@ -14,7 +14,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import Instrument, TradecraftAdapter, VenueRequestError, swap_output
+from cantonvenues import Instrument, TradecraftAdapter, VenueRequestError, swap_output
 
 HEALTH = {"status": "ok"}
 

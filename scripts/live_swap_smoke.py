@@ -23,8 +23,8 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-from canton_toolkit import VenueAuthError, VenueError
-from canton_toolkit.venues.cantex import BASE_URL_ENV, DEFAULT_BASE_URL, CantexAdapter
+from cantonvenues import VenueAuthError, VenueError
+from cantonvenues.venues.cantex import BASE_URL_ENV, DEFAULT_BASE_URL, CantexAdapter
 
 TOOLKIT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = TOOLKIT_ROOT / ".env"

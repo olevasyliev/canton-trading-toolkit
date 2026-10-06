@@ -1,8 +1,10 @@
-# canton_toolkit
+# Canton Venues SDK
 
-An open-source algorithmic-trading toolkit for the [Canton Network](https://www.canton.network/).
+The Canton Algorithmic Trading Toolkit: an open-source Python SDK for trading and reading every venue on
+the [Canton Network](https://www.canton.network/). It powers [cantonvenues.com](https://cantonvenues.com).
+Install and import it as `cantonvenues`.
 
-The core (`canton_toolkit.core`) is venue-agnostic: a small typed domain model
+The core (`cantonvenues.core`) is venue-agnostic: a small typed domain model
 and four adapter interfaces, all with a shared `VenueError` hierarchy.
 
 - `PoolDataAdapter` — read and price an AMM: `Instrument`, `Pool`, `Quote`.
@@ -43,7 +45,7 @@ it came from in [`SOURCES.md`](SOURCES.md).
 and pulled directly from GitHub:
 
 ```bash
-pip install "canton_toolkit @ git+https://github.com/olevasyliev/canton-trading-toolkit"
+pip install "cantonvenues @ git+https://github.com/olevasyliev/canton-venues-sdk"
 # or, from a checkout:
 pip install -e ".[dev]"
 ```
@@ -67,7 +69,7 @@ are the SDK's own:
 ```python
 import asyncio
 from decimal import Decimal
-from canton_toolkit import CantexAdapter, Instrument
+from cantonvenues import CantexAdapter, Instrument
 
 async def main():
     async with CantexAdapter() as venue:  # reads keys from the environment
@@ -85,7 +87,7 @@ asyncio.run(main())
 Market data from an order-book venue, no key needed:
 
 ```python
-from canton_toolkit import RockyAdapter
+from cantonvenues import RockyAdapter
 
 async def top_of_book():
     async with RockyAdapter() as rocky:          # RockyAdapter("perp") for perpetuals

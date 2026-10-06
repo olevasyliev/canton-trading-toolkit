@@ -28,7 +28,7 @@ from decimal import Decimal
 
 import httpx
 
-from canton_toolkit import DexRefAdapter, HostedPartySwapRoute, Instrument
+from cantonvenues import DexRefAdapter, HostedPartySwapRoute, Instrument
 
 DEFAULT_BASE = "https://testnet-dex.bitdynamics.cc/api"
 BASE_PAIR = ("dBTC", "dUSD")

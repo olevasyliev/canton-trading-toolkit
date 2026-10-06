@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
-from canton_toolkit import TradecraftAdapter, VenueRequestError
+from cantonvenues import TradecraftAdapter, VenueRequestError
 
 SPEC_TOKEN_ENUM = {"CC", "USDCx", "CBTC", "cETH", "HANDL", "EDELx", "SBC"}
 TOLERANCE = Decimal("1e-12")

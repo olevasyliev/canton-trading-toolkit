@@ -12,7 +12,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import OneSwapPublicData, PoolPartyPublicData, constant_product_output
+from cantonvenues import OneSwapPublicData, PoolPartyPublicData, constant_product_output
 
 DSO = "DSO::1220b1431ef217342db44d516bb9befde802be7d8899637d290895fa58880f19accc"
 UUID = "481871d4-ca56-42a8-b2d3-4b7d28742946"
@@ -73,8 +73,8 @@ def test_constant_product_output_takes_the_fee_on_input() -> None:
 
 
 def test_pool_output_both_directions() -> None:
-    from canton_toolkit import ReservePool
-    from canton_toolkit.core.models import Instrument
+    from cantonvenues import ReservePool
+    from cantonvenues.core.models import Instrument
 
     p = ReservePool("oneswap", "p", "CC", "USDCx", Instrument(DSO, "Amulet"), Instrument("u", "USDCx"),
                     Decimal(1000), Decimal(100), Decimal(0), "test")

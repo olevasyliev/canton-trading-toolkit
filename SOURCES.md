@@ -1,6 +1,6 @@
 # SDK integration point provenance
 
-Every point where `canton_toolkit` touches `cantex_sdk` is listed here with the
+Every point where `cantonvenues` touches `cantex_sdk` is listed here with the
 source location it was verified against. Line numbers refer to the SDK at
 commit cloned from `https://github.com/caviarnine/cantex_sdk`, file
 `src/cantex_sdk/_sdk.py` (unless noted otherwise).

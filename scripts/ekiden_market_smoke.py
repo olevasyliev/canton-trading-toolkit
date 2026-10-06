@@ -14,7 +14,7 @@ import argparse
 import asyncio
 from decimal import Decimal
 
-from canton_toolkit import EkidenAdapter
+from cantonvenues import EkidenAdapter
 
 
 def _pct(value: Decimal) -> str:

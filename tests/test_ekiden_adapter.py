@@ -14,7 +14,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import EkidenAdapter, Side, VenueRequestError
+from cantonvenues import EkidenAdapter, Side, VenueRequestError
 
 INFO = {
     "build_id": "dev-local",

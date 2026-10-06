@@ -13,7 +13,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from canton_toolkit import (
+from cantonvenues import (
     AllocationSwapRoute,
     DemoAllocationAuthorizer,
     DexRefAdapter,
