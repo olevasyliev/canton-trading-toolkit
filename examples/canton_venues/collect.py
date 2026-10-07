@@ -37,6 +37,7 @@ import httpx
 import model as m
 import venue_pages
 from model import CC, VenuePool
+from publish_guard import PublishGuard
 
 from cantonvenues import (
     CantexPublicData,
@@ -64,6 +65,9 @@ NO_LOGO = {"USX", "USDXLR"}
 # What a perp tracks outside Canton, for its basis. CoinGecko ids.
 PERP_SPOT = {"BTC": "bitcoin", "ETH": "ethereum", "CC": "canton-network", "XAU": "pax-gold",
              "XAG": "kinesis-silver", "HYPE": "hyperliquid"}
+# why a CC pool is read but not quoted (lp.json unpriced_pools)
+UNNAMED = "token not named by any venue we price"
+SECOND_POOL = "a second pool for the same token"
 # Rocky quote asset (upper-cased; the venue mixes cases) -> our token key
 ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
 
@@ -136,6 +140,12 @@ class Collector:
         self.desk.setdefault("router", {"fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}})
         self.desk.setdefault("arb", {})
         self.desk.setdefault("pnl", [])
+        # CC pools read but not quoted this tick (a token no venue names, a second pool for a token);
+        # their liquidity still counts, from the CC side, in every pool total (lp.json unpriced_pools)
+        self.unpriced: list[dict] = []
+        # row id -> unix time of the last successful read of that venue's data, for the publish guard
+        self.fresh: dict[str, int] = {}
+        self.guard = PublishGuard(out / "venues" / "published.json")
 
     async def start(self) -> None:
         await self.cantex.connect()
@@ -168,6 +178,7 @@ class Collector:
                 v = await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)
                 vols[st.amm_id] = float(v.get("1d", 0))
             self.slow["tc_volume"] = vols
+            self.fresh["tradecraft"] = int(time.time())
         except Exception as exc:  # noqa: BLE001
             log.warning("tradecraft volume: %s", exc)
         try:
@@ -192,6 +203,7 @@ class Collector:
                 vol = await temple.settled_volume(24)
                 self.slow["temple_volume"] = {mk["symbol"]: float(mk["quote_volume"]) for mk in vol["markets"]}
                 self.slow["temple_total"] = float(vol["total_volume_usd"])
+                self.fresh["temple"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("temple", exc)
         try:
@@ -270,6 +282,7 @@ class Collector:
                 volume += t.turnover_24h * q_usd
                 if k in out:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
+            self.fresh["rocky"] = int(time.time())
             return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, (b, _) in kept.items()},
                     float(volume))
         except Exception as exc:  # noqa: BLE001
@@ -337,6 +350,7 @@ class Collector:
                     rows.append(self._perp_row("rocky_perp", t.symbol, mk.base, mk.quote, t.last_price,
                                                None, None, None, None, t.turnover_24h, bid, ask,
                                                spot(mk.base)))
+                self.fresh["rocky_perp"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("rocky_perp", exc)
         ekiden = await self._venue("ekiden")
@@ -347,6 +361,7 @@ class Collector:
                     rows.append(self._perp_row("ekiden", t.symbol, base, quote, t.last_price, t.mark_price,
                                                t.index_price, t.funding_rate, t.open_interest * t.mark_price,
                                                t.turnover_24h, t.best_bid, t.best_ask, spot(base)))
+                self.fresh["ekiden"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("ekiden", exc)
         return sorted(rows, key=lambda x: -(x["turnover_24h_usd"] or 0))
@@ -446,18 +461,28 @@ class Collector:
             prev = books.setdefault(m.key(sym), {}).get("cantex")
             if prev is None or pool.cc_reserve > prev.cc_reserve:
                 books[m.key(sym)]["cantex"] = pool
+            if prev is not None:  # one pool per token is quoted; the other still holds liquidity
+                self._unquoted("cantex", sym, min(prev.cc_reserve, pool.cc_reserve), SECOND_POOL)
 
         tc_inst = {p.contract_id: (p.token_a, p.token_b) for p in tc_pools}
         for st in tc_states:
-            if CC not in (st.token_a, st.token_b) or st.amm_id not in tc_inst:
+            if CC not in (st.token_a, st.token_b):
                 continue
-            ia, ib = tc_inst[st.amm_id]
             tok_sym = st.token_b if st.token_a == CC else st.token_a
-            tok_inst = ib if st.token_a == CC else ia
-            sym = symbol_of.get(tok_inst) or names.get((tok_inst.admin, tok_inst.id), tok_sym)
             cc_res, tok_res = st.reserves_for(CC, tok_sym)
             if cc_res <= 0 or tok_res <= 0:
                 continue
+            if st.amm_id not in tc_inst:  # no instrument to match the token by
+                self._unquoted("tradecraft", tok_sym, cc_res, UNNAMED)
+                continue
+            ia, ib = tc_inst[st.amm_id]
+            tok_inst = ib if st.token_a == CC else ia
+            sym = symbol_of.get(tok_inst) or names.get((tok_inst.admin, tok_inst.id), tok_sym)
+            prev = books.get(m.key(sym), {}).get("tradecraft")
+            if prev is not None:
+                self._unquoted("tradecraft", sym, min(prev.cc_reserve, cc_res), SECOND_POOL)
+                if prev.cc_reserve >= cc_res:
+                    continue
 
             share = st.lp_fee / st.total_fee if st.total_fee else Decimal(0)
             books.setdefault(m.key(sym), {})["tradecraft"] = VenuePool(
@@ -486,6 +511,7 @@ class Collector:
                 pools = await src.pools()
                 if venue == "poolparty":
                     self.slow["pp_volume"] = await src.volume()
+                self.fresh[venue] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop(venue, exc)
                 continue
@@ -501,9 +527,15 @@ class Collector:
                 else:
                     names = by_id.get(tok.id, set())
                     sym = next(iter(names)) if len(names) == 1 else None
-                if sym is None:
-                    continue  # a token no venue we price can name
                 cc_res, tok_res = (p.reserve_a, p.reserve_b) if cc_is_a else (p.reserve_b, p.reserve_a)
+                if sym is None:  # a token no venue we price can name: not quoted, still liquidity
+                    self._unquoted(venue, (p.symbol_b if cc_is_a else p.symbol_a)[:8], cc_res, UNNAMED)
+                    continue
+                prev = books.get(m.key(sym), {}).get(venue)
+                if prev is not None:
+                    self._unquoted(venue, sym, min(prev.cc_reserve, cc_res), SECOND_POOL)
+                    if prev.cc_reserve >= cc_res:
+                        continue
                 # lp_share 0: neither venue publishes the LP cut, so no fee APR is shown for them
                 books.setdefault(m.key(sym), {})[venue] = VenuePool(
                     venue, sym, cc_res, tok_res, p.fee, Decimal(0),
@@ -511,19 +543,31 @@ class Collector:
                 self.slow.setdefault("pp_pool_of", {})[(venue, m.key(sym))] = p.pool_id
 
     def _pp_volume_usd(self, cc_usd) -> tuple[dict[str, float], float]:
-        """Pool Party volume per CC-paired token key, and its total, in dollars."""
+        """Pool Party volume per CC-paired token key, and its total, in dollars.
+
+        The total is the CC side of every CC pool (``Amulet`` legs, named token or not) at our CC
+        price: Pool Party reports token amounts, not dollars. Its other legs (EDELx, USDC.B, ...)
+        may be the other side of the same trades, so adding them could count a trade twice.
+        """
         per_pool = self.slow.get("pp_volume") or {}
-        stable = {"USDCx", "USDC.B", "FRXUSD.B"}
         total, by_key = 0.0, {}
         for name, vol in per_pool.items():
-            usd = (float(vol["Amulet"]) * float(cc_usd) if "Amulet" in vol
-                   else next((float(v) for k, v in vol.items() if k in stable), 0.0))
-            total += usd
+            total += float(vol.get("Amulet", 0)) * float(cc_usd)
         for (venue, key), pool_id in (self.slow.get("pp_pool_of") or {}).items():
             vol = per_pool.get(pool_id) or {}
             if venue == "poolparty" and "Amulet" in vol:
                 by_key[key] = float(vol["Amulet"]) * float(cc_usd)
         return by_key, total
+
+    def _unquoted(self, venue: str, token: str, cc_reserve, reason: str) -> None:
+        if cc_reserve and cc_reserve > 0:
+            self.unpriced.append({"venue": venue, "pair": f"CC/{token}", "cc_reserve": cc_reserve,
+                                  "reason": reason})
+
+    def _unpriced_json(self, cc_usd) -> list[dict]:
+        return sorted(({"venue": p["venue"], "pair": p["pair"], "reason": p["reason"],
+                        "tvl_usd": round(float(2 * p["cc_reserve"] * cc_usd), 2)} for p in self.unpriced),
+                      key=lambda x: -x["tvl_usd"])
 
     def _usd_series(self, now_ms: int, usdcx_usd: Decimal) -> dict[str, list]:
         """Hourly dollar series per token from Cantex candles (X-CC times CC-USDCX)."""
@@ -553,6 +597,8 @@ class Collector:
         cx_states = await self.cantex.pool_states()
         tc_states = await self.tradecraft.pool_states()
         tc_pools = await self.tradecraft.pools()
+        self.fresh["cantex"] = now  # read every tick: a failed read fails the tick
+        self.unpriced = []
         if self.tick_no % SLOW_EVERY == 0 or not self.slow:
             markets = await self.cantex.markets()
             await self._refresh_slow(tc_states, markets)
@@ -613,7 +659,7 @@ class Collector:
                                                               "temple")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
-        write_json(self.api / "lp.json", {"t": now, "pools": lp})
+        write_json(self.api / "lp.json", {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)})
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
@@ -625,9 +671,9 @@ class Collector:
         try:  # a page per venue, its share card redrawn every few ticks
             venue_pages.build(self.out, {"venues": venues, "tokens": {"t": now, "tokens": tokens},
                                          "execution": {"t": now, "pairs": execution},
-                                         "lp": {"t": now, "pools": lp},
-                                         "perps": {"t": now, "markets": perps}},
-                              now, cards=self.tick_no % SLOW_EVERY == 0)
+                                         "lp": {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)},
+                                         "perps": {"t": now, "markets": perps}, "summary": summary},
+                              now, cards=self.tick_no % SLOW_EVERY == 0, guard=self.guard, fresh=self.fresh)
         except Exception:  # one bad page must not fail the tick
             log.exception("venue pages")
         await self._alerts(tokens, premium, scan, now)

@@ -71,9 +71,13 @@ def data():
     perps = [perp("rocky_perp", "BTC", 4_000_000, None), perp("rocky_perp", "ETH", 600_000, None),
              perp("ekiden", "BTC", 200_000, 40_000), perp("ekiden", "ETH", 60_000, 10_000),
              perp("ekiden", "CC", 20_000, 2_000)]
+    # DefiLlama's Canton DEX list as summary.json carries it: it confirms the "on Canton" spot rankings
+    llama = [{"name": "Temple", "volume_24h": 34_500_000}, {"name": "Cantex", "volume_24h": 4_500_000},
+             {"name": "Rocky Exchange Spot", "volume_24h": 2_600_000}, {"name": "Pool Party", "volume_24h": 2_900}]
     return {"venues": {"t": T, "venues": venues, "spot_volume_24h_usd": 41_002_600},
             "tokens": {"t": T, "tokens": tokens}, "execution": {"t": T, "pairs": pairs},
-            "lp": {"t": T, "pools": lp}, "perps": {"t": T, "markets": perps}}
+            "lp": {"t": T, "pools": lp}, "perps": {"t": T, "markets": perps},
+            "summary": {"cc_usd": 0.12, "ecosystem": {"venues": llama}}}
 
 
 def test_every_live_venue_gets_a_page_and_closed_ones_do_not():
@@ -87,10 +91,13 @@ def test_every_live_venue_gets_a_page_and_closed_ones_do_not():
 def test_headline_is_the_first_thing_a_venue_leads():
     f = vp.facts(data())
     h = {s: vp.headline(x) for s, x in f.items()}
-    assert h["temple"]["rule"] == "spot_volume" and "$34.0M" in h["temple"]["sub"]
+    assert h["temple"]["rule"] == "spot_volume" and "$34M" in h["temple"]["sub"]
+    assert h["temple"]["title"] == "The largest spot venue on Canton" and h["temple"]["scope"] == "canton"
     assert h["temple"]["next"] == "Cantex"  # runner-up by spot volume
     assert h["cantex"]["rule"] == "kind_volume" and h["cantex"]["title"] == "The largest AMM on Canton by volume"
     assert h["rocky"]["rule"] == "perp_volume"
+    # derivatives coverage is not confirmed by any outside list: scoped to what we read
+    assert h["rocky"]["title"] == "The largest perps venue among the Canton venues we read"
     # Tradecraft wins both $50K CC-pair quotes, but its headline is its pool liquidity
     assert h["tradecraft"]["rule"] == "tvl" and h["tradecraft"]["next"] == "Cantex"
     assert h["ekiden"]["rule"] == "perp_markets" and "3 markets trading: BTC, ETH, CC" in h["ekiden"]["sub"]
@@ -151,9 +158,10 @@ def test_method_lines_never_repeat():
 
 def test_card_ranks_only_the_top_half():
     panels = {p["k"]: p for p in vp.stats(vp.facts(data())["ekiden"])}
-    assert panels["Perps volume, 24h"]["n"] == "as the venue reports it"  # #2 of 2 is not shown
+    # #2 of 2 is not shown; Ekiden reports quote-token turnover, not dollars
+    assert panels["Perps volume, 24h"]["n"] == "quote-token turnover"
     panels = {p["k"]: p for p in vp.stats(vp.facts(data())["temple"])}
-    assert panels["Spot volume, 24h"]["n"] == "#1 of 5 spot venues"
+    assert panels["Spot volume, 24h"]["n"] == "#1 of 5 spot venues reporting volume"
 
 
 class _Meta(HTMLParser):
@@ -190,7 +198,7 @@ def test_page_carries_its_own_social_card_and_share_link(tmp_path):
     intent = next(h for h in p.links if h.startswith("https://x.com/intent/post"))
     q = parse_qs(urlparse(intent).query)
     assert q["text"][0].startswith("Where Temple (@temple_ny) leads on Canton Venues: the largest spot venue")
-    assert "Where Temple leads: the largest spot venue on Canton." in page and "Next: Cantex, $4.0M." in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
+    assert "Where Temple leads: the largest spot venue on Canton." in page and "Next: Cantex, $4M." in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
     # no verified handle: the venue is named, nobody is tagged
     one = (tmp_path / "venues" / "oneswap" / "index.html").read_text()
     oq = parse_qs(urlparse(next(h for h in _links(one) if "intent/post" in h)).query)
@@ -309,7 +317,7 @@ def test_token_tile_names_the_tokens_and_says_what_we_leave_out():
     f = vp.facts(d)
     tile = next(p for p in vp.stats(f["temple"]) if p.get("names"))
     assert tile["k"] == "Markets we price" and tile["v"] == "CBTC"
-    assert tile["n"] == "1 of Temple's 3 active markets"
+    assert tile["n"] == "1 of 3, CC/USDCx, eXAU/USDCx excluded"
     assert any("we price 1 of them as tokens (CBTC)" in m for m in f["temple"]["method"])
     # many names: four at most, then a count of the rest
     assert vp.names_text(["A", "B", "C", "D", "E", "F"]) == "A, B, C, D +2"
@@ -365,3 +373,118 @@ def test_our_own_look_stays_available(tmp_path):
     vp.build(tmp_path, data(), T, look="ours")
     with Image.open(tmp_path / "venues" / "temple" / "card.png") as im:
         assert im.convert("RGB").getpixel((5, 300)) == vp._hex(vp.THEMES["light"]["bg"])
+
+
+# === the verifier's fixes (2026-10-07) ======================================
+
+def test_an_unpriced_cc_pool_still_counts_from_its_cc_side():
+    d = data()
+    # Pool Party's fifth pool pairs CC with a token no venue names: 2x its CC reserve, never dropped
+    d["lp"]["unpriced_pools"] = [{"venue": "poolparty", "pair": "CC/481871d4", "tvl_usd": 54_000.0,
+                                  "reason": "token not named by any venue we price"}]
+    f = vp.facts(d)["pool-party"]
+    assert f["tvl"] == 66_000 and f["pool_n"] == 2 and f["pool_priced"] == 1
+    assert vp.headline({**f, "leads": []})["sub"] == "2 CC pools, $66K in liquidity, 1 priced"
+    assert vp.pools_text(f) == "2 CC pools, 1 priced"
+    tiles = {p["k"]: p for p in vp.stats(f)}
+    assert tiles["In pools"]["v"] == "$66K" and tiles["In pools"]["n"] == "2 CC pools, 1 priced"
+    assert tiles["Largest pool"]["n"] == "CC and an unnamed token"  # the unnamed pool is the largest
+    assert any("counted from the CC side" in m for m in f["method"])
+    # the same rule for every AMM: an unpriced pool on Cantex counts in its total and its pool count
+    d["lp"]["unpriced_pools"].append({"venue": "cantex", "pair": "CC/USDCx", "tvl_usd": 5_000.0,
+                                      "reason": "a second pool for the same token"})
+    assert vp.facts(d)["cantex"]["tvl"] == 405_000
+
+
+def test_volume_is_labelled_as_the_venue_reports_it_only_when_it_reports_dollars():
+    f = vp.facts(data())
+    assert vp.volume_note("temple", 0.12) == vp.volume_note("tradecraft", 0.12) == "as the venue reports it"
+    assert vp.volume_note("poolparty", 0.1177) == "CC side at $0.1177 per CC"
+    assert vp.volume_note("cantex", 0.1177) == "CC volume at $0.1177 per CC"
+    assert vp.volume_note("rocky", 0.12) == "quote-token turnover"
+    pp = {p["k"]: p for p in vp.stats(f["pool-party"])}
+    assert pp["Spot volume, 24h"]["n"] == "CC side at $0.1200 per CC"
+    note = vp.card_notes(f["pool-party"], vp.headline(f["pool-party"]))
+    assert "the CC side of each CC pool, converted at $0.1200 per CC" in note
+    assert "as Pool Party reports it" not in note
+
+
+def test_a_lead_needs_a_clear_margin_over_the_runner_up():
+    d = data()
+    lp = d["lp"]["pools"]
+    lp[1]["tvl_usd"] = lp[0]["tvl_usd"] / 1.05  # Tradecraft only 5% ahead of Cantex on pool liquidity
+    f = vp.facts(d)["tradecraft"]
+    assert all(x["rule"] != "tvl" for x in f["leads"])
+    assert {"rule": "tvl", "next": "Cantex"} == {k: f["near"][0][k] for k in ("rule", "next")}
+    # it falls to the next category the rule finds: its USDCx pool, 50% deeper than Cantex's
+    assert vp.headline(f)["rule"] == "token_depth" and vp.headline(f)["margin"] == pytest.approx(0.5)
+    lp[1]["tvl_usd"] = lp[0]["tvl_usd"] / (1 + vp.LEAD_MARGIN)  # exactly at the margin: a lead
+    assert vp.headline(vp.facts(d)["tradecraft"])["rule"] == "tvl"
+    assert vp._lead({"a": 109, "b": 100}, "a") is None and vp._lead({"a": 111, "b": 100}, "a")[0] == "b"
+
+
+def test_a_best_price_lead_must_survive_known_network_fees():
+    d = data()
+    d["execution"]["pairs"].append({"key": "HANDL", "kind": "cc", "symbol": "HANDL", "venues": ["cantex", "oneswap"],
+                                    "rows": [_row("sell", 1000, {"oneswap": 1.0071, "cantex": 1.0}, "oneswap")]})
+    d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
+        "cantex": {"liquidity_usd": 50_000}, "oneswap": {"liquidity_usd": 100_000}}})
+    lead = next(x for x in vp.facts(d)["oneswap"]["leads"] if x["rule"] == "best_quote")
+    assert lead["title"] == "Best price to buy HANDL with CC at $1K"
+    assert lead["sub"].endswith("pool fees and price impact included, network fees excluded")
+    # 71 bp quoted; OneSwap charged its $2 network fee (20 bp at $1K), Cantex 0.86 CC at $0.12 (1 bp)
+    assert lead["margin"] * 10_000 == pytest.approx(71 - 20 + 1, abs=1)
+    # 25 bp quoted is gone once OneSwap's fee is paid: not a lead
+    d["execution"]["pairs"][-1]["rows"][0]["out"]["oneswap"] = 1.0025
+    assert not any(x["rule"] == "best_quote" for x in vp.facts(d)["oneswap"]["leads"])
+    # a venue whose fee we do not know never wins on the fee we know for the other: 5 bp quoted is not 10
+    d["execution"]["pairs"][-1]["rows"][0]["out"] = {"poolparty": 1.0005, "cantex": 1.0}
+    d["tokens"]["tokens"][-1]["venues"]["poolparty"] = {"liquidity_usd": 50_000}
+    assert not any(x["rule"] == "best_quote" for x in vp.facts(d)["pool-party"]["leads"])
+
+
+def test_on_canton_only_where_an_outside_list_confirms_it():
+    assert vp.CATEGORIES["spot_volume"]["source"] == vp.LLAMA_DEXS
+    assert all(c["scope"] == "read" for r, c in vp.CATEGORIES.items() if r not in ("spot_volume", "kind_volume"))
+    d = data()
+    d["summary"]["ecosystem"]["venues"] = []  # no outside list: nothing is claimed for the whole chain
+    h = {s: vp.headline(x) for s, x in vp.facts(d).items()}
+    assert h["temple"]["title"] == "The largest spot venue among the Canton venues we read"
+    assert h["cantex"]["title"] == "The largest AMM by volume among the Canton venues we read"
+    # DefiLlama lists a bigger spot venue than ours: Temple's lead stays scoped to what we read
+    d["summary"]["ecosystem"]["venues"] = [{"name": "Temple", "volume_24h": 1}, {"name": "Elsewhere", "volume_24h": 9}]
+    assert vp.headline(vp.facts(d)["temple"])["scope"] == "read"
+    # a larger entry we cannot place by kind also blocks "the largest AMM on Canton"
+    d["summary"]["ecosystem"]["venues"] = [{"name": "Cantex", "volume_24h": 4}, {"name": "Elsewhere", "volume_24h": 9}]
+    assert vp.headline(vp.facts(d)["cantex"])["scope"] == "read"
+    for x in vp.facts(data()).values():
+        for lead in x["leads"]:
+            assert ("on Canton" in lead["title"]) == (lead["scope"] == "canton"), lead["title"]
+
+
+def test_a_keyed_book_never_appears_on_the_card():
+    d = data()
+    f = vp.facts(d)["temple"]
+    tiles = {p["k"]: p for p in vp.stats(f)}
+    assert "Within 1% of mid" not in tiles and tiles["Share of spot volume"]["v"] == "83%"
+    assert not any(x["rule"] == "token_depth" for x in f["leads"])
+    # Rocky's book is public: its depth tile stays and names the pair
+    rocky = {p["k"]: p for p in vp.stats(vp.facts(d)["rocky"])}
+    assert rocky["Within 1% of mid"]["n"] == "CBTC/USDCx book"
+
+
+def test_one_money_style_and_tokens_lead_with_non_stablecoins():
+    assert [vp.short_money(x) for x in (60_100, 2_636, 84_000, 1_200_000, 490_000, 512, 2.65, 999_960)] == [
+        "$60.1K", "$2.6K", "$84K", "$1.2M", "$490K", "$512", "$2.65", "$1M"]
+    assert vp.money(34_115_904) == vp.short_money(34_115_904) == "$34.1M"
+    f = {"name": "X", "tokens": [{"symbol": "USDC.B", "key": "USDC.B"}, {"symbol": "USDCx", "key": "USDCX"},
+                                 {"symbol": "EDELx", "key": "EDELX"}, {"symbol": "eXAU", "key": "EXAU"}]}
+    assert vp.token_tile(f)["names"] == ["EDELx", "eXAU", "USDC.B", "USDCx"]
+
+
+def test_card_footer_names_every_kind_of_figure_on_the_card():
+    for slug, f in vp.facts(data()).items():
+        head = vp.headline(f)
+        note = vp.card_notes(f, head)
+        for p in vp.stats(f):
+            assert vp.metric_note(p["m"], f) in note, (slug, p["m"])

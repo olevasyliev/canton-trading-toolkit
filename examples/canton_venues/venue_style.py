@@ -241,9 +241,10 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
     for part, col in (("Live Canton DEX data from ", o["text"]), ("cantonvenues.com", o["accent"])):
         d.text((x, st + 30 * S), part, font=sf, fill=col, anchor="lm")
         x += d.textlength(part, font=sf)
-    note = footer_note(f, head)
-    d.text((M, st + 62 * S), note, font=vp._fit(d, note, "Regular", 19 * S, width, 13 * S), fill=o["text2"],
-           anchor="lm")
+    lines, nf = vp.note_lines(d, footer_note(f, head), lambda z: vp._font("Regular", z), width, 19 * S, 14 * S,
+                              11 * S)
+    for n, line in enumerate(lines):  # two lines sit lower and closer: the strip is 86px tall
+        d.text((M, st + (57 + 18 * n if len(lines) > 1 else 62) * S), line, font=nf, fill=o["text2"], anchor="lm")
 
     out = img.resize((1200, 630), Image.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,7 +254,7 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
 
 
 def footer_note(f: dict, head: dict) -> str:
-    return f"Independent data, not affiliated with {f['name']}. {vp.METHOD.get(head['rule'], '')}".strip()
+    return vp.card_notes(f, head)
 
 
 def strip_line() -> str:

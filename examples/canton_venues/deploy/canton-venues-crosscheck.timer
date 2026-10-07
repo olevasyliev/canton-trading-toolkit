@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Canton Venues cross-check once a day
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 UTC
+Persistent=false
+Unit=canton-venues-crosscheck.service
+
+[Install]
+WantedBy=timers.target
