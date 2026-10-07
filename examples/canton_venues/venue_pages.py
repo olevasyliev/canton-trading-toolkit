@@ -1652,8 +1652,8 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
                 + (f'<div class="tagline">{lead}</div>' if lead else ""))
         if f.get("spot_volume") is not None:
             v24 = money(f["spot_volume"])
-        elif f.get("perp_volume") is not None:
-            v24 = f'{money(f["perp_volume"])}<span class="muted"> perps</span>'
+        elif f.get("perp_volume") is not None:  # perps-only: the Perps column already shows it
+            v24 = '<span class="muted">n/a</span>'
         else:
             v24 = '<span class="muted">not published</span>'
         perps = money(f["perp_volume"]) if f.get("perp_volume") is not None else '<span class="muted">n/a</span>'
