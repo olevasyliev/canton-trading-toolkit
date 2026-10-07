@@ -51,7 +51,8 @@ VENUES = [
 
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
-    "temple": ["Taker fee 1 bp is Temple's published rate."],
+    "temple": ["Taker fee 1 bp is Temple's published rate.",
+               "Temple's CC/USDCx book feeds the CC premium board, not the token list."],
     "rocky": ["Taker fee 0.025% is assumed: Rocky publishes no fee schedule.",
               "Books quoted in USDC.B are valued at par ($1), not at USDC.B's pool price.",
               "Dollar routes compare Rocky's USDCx books only."],
@@ -78,6 +79,8 @@ CLEAR_EDGE_BPS = 10
 SIZE_LABEL = {100: "$100", 1000: "$1K", 10000: "$10K", 50000: "$50K"}
 KIND_SHORT = {"Spot AMM": "AMM", "Spot order book": "order book"}
 LIVE = ("priced", "volume")
+# what a missing figure shows as: a word, not a dash (no dashes in anything we publish)
+NA = "n/a"
 
 
 # === numbers ===============================================================
@@ -85,7 +88,7 @@ LIVE = ("priced", "volume")
 def money(v, digits: int = 2) -> str:
     """Dollars the way the dashboard writes them: $34.15M, $200,374, $2.65."""
     if v is None:
-        return "–"
+        return NA
     a = abs(v)
     if a >= 1e9:
         return f"${v / 1e9:.{digits}f}B"
@@ -99,7 +102,7 @@ def money(v, digits: int = 2) -> str:
 def short_money(v) -> str:
     """For the card: $34.1M, $490K, $2,649."""
     if v is None:
-        return "–"
+        return NA
     a = abs(v)
     if a >= 1e9:
         return f"${v / 1e9:.1f}B"
@@ -114,7 +117,7 @@ def short_money(v) -> str:
 
 def price(v) -> str:
     if v is None:
-        return "–"
+        return NA
     d = 2 if abs(v) >= 1 else 4 if abs(v) >= 0.01 else 6
     return f"${v:,.{d}f}"
 
@@ -299,6 +302,16 @@ def facts(data: dict) -> dict[str, dict]:
             oi = [m["open_interest_usd"] for m in f["perp_markets"] if m["open_interest_usd"] is not None]
             f["open_interest"] = sum(oi) if oi else None
         f["tokens"] = sorted(tok_rows.get(i, []), key=lambda x: -(x.get("liquidity_usd") or 0))
+        # the venue's own market list, when the collector has one (Temple: every market that settled
+        # in the last 24h), so a card can say how many of them we price
+        listed = [s.partition("/")[0] for s in main.get("markets_24h") or []]
+        if listed:
+            f["listed"] = list(dict.fromkeys(listed))
+            ours = [x["symbol"] for x in f["tokens"] if x["symbol"] in f["listed"]]
+            if len(ours) < len(f["listed"]):
+                f["method"].append(f"{v['name']} had {len(f['listed'])} markets trading in the last 24h "
+                                   f"({', '.join(f['listed'])}); we price {len(ours)} of them as tokens "
+                                   f"({', '.join(ours)}).")
         if f["tokens"]:
             f["token_rank"], f["token_n"] = _rank({k: len(x) for k, x in tok_rows.items()}, i)
             top = max(f["tokens"], key=lambda x: x.get("depth_1pct_usd") or 0)
@@ -427,8 +440,54 @@ def lead_line(f: dict, head: dict) -> str | None:
     return f"Where {f['name']} leads: {_lower_first(head['title'])}. {head['sub']}. Next: {nxt}."
 
 
+def names_text(names: list[str], shown: int = 4) -> str:
+    """"CBTC, eXAU, eXAG", or the first ``shown`` and a count of the rest: "USDC.B, USDCx +21"."""
+    rest = len(names) - shown
+    return ", ".join(names[:shown]) + (f" +{rest}" if rest > 0 else "")
+
+
+def fit_value(d, p: dict, font_at, width: float, size: int, floor: int):
+    """A tile's value and its font: the largest size down to ``floor`` at which it fits. A list of
+    names drops names (four at most, then "+N") before it would go under the floor."""
+    names = p.get("names")
+    tries = [names_text(names, k) for k in range(min(4, len(names)), 0, -1)] if names else [p["v"]]
+    for text in tries:
+        z = size
+        while z > floor and d.textlength(text, font=font_at(z)) > width:
+            z -= 2
+        if d.textlength(text, font=font_at(z)) <= width:
+            return text, font_at(z)
+    return tries[-1], font_at(floor)
+
+
+def token_tile(f: dict) -> dict:
+    """What we price there, by name. When the venue publishes its own market list and we price only
+    part of it, the tile says so ("3 of Temple's 4 active markets")."""
+    names = [x["symbol"] for x in f["tokens"]]
+    listed = f.get("listed") or []
+    if listed and set(listed) - set(names):
+        n = len(set(names) & set(listed))
+        return {"k": "Markets we price", "v": names_text(names), "names": names,
+                "n": f"{n} of {f['name']}'s {len(listed)} active markets"}
+    return {"k": "Tokens priced", "v": names_text(names), "names": names,
+            "n": f"{len(names)} priced live"}
+
+
+def perp_tile(f: dict) -> dict:
+    """Perp markets by name, the ones trading first; trading means $1K or more in 24h, the same line
+    the "most perp markets" headline draws."""
+    ms = f["perp_markets"]
+    live = [m["base"] for m in ms if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
+    if not live:
+        names = [m["base"] for m in ms]
+        return {"k": "Perp markets", "v": names_text(names), "names": names, "n": f"{len(ms)} listed, none trading"}
+    n = f"{len(ms)} listed, all trading" if len(live) == len(ms) else f"{len(live)} trading, {len(ms)} listed"
+    return {"k": "Perp markets trading", "v": names_text(live), "names": live, "n": n}
+
+
 def stats(f: dict) -> list[dict]:
-    """Up to four card panels: header, value, small line under it."""
+    """Up to four card panels: header, value, small line under it. A tile of names carries them in
+    ``names`` so the card can fit as many as the width allows."""
     out = []
     if f.get("spot_volume"):
         out.append({"k": "Spot volume, 24h", "v": short_money(f["spot_volume"]),
@@ -444,17 +503,16 @@ def stats(f: dict) -> list[dict]:
     if f.get("open_interest"):
         out.append({"k": "Open interest", "v": short_money(f["open_interest"]), "n": "all markets"})
     if f.get("perp_markets") and len(out) < 4:
-        out.append({"k": "Perp markets", "v": str(len(f["perp_markets"])),
-                    "n": ", ".join(m["base"] for m in f["perp_markets"][:4])})
+        out.append(perp_tile(f))
     if f.get("tokens") and len(out) < 4:
-        out.append({"k": "Tokens", "v": str(len(f["tokens"])), "n": "priced live"})
+        out.append(token_tile(f))
     if f.get("pools") and len(out) < 4:
         p = f["pools"][0]
         out.append({"k": "Largest pool", "v": short_money(p["tvl_usd"]), "n": p["pair"]})
     if f.get("pools") and len(out) < 4:
         fees = sorted({p["fee"] for p in f["pools"]})
         out.append({"k": "Pool fee", "v": f"{fees[0] * 100:.2f}%" if len(fees) == 1
-                    else f"{fees[0] * 100:.2f}–{fees[-1] * 100:.2f}%", "n": "per swap"})
+                    else f"{fees[0] * 100:.2f}% to {fees[-1] * 100:.2f}%", "n": "per swap"})
     return out[:4]
 
 
@@ -552,7 +610,21 @@ def draw_logo(d, x: float, y: float, size: float, text_rgb, bg_rgb) -> None:
         d.rounded_rectangle((x + rx * k, y + ry * k, x + (rx + w) * k, y + (ry + h) * k), radius=3 * k, fill=fill)
 
 
-def render_card(f: dict, head: dict, t: int, path: Path, theme: str = "light") -> None:
+# which card ships: "venue" draws each venue's card in its own visual style (venue_style.py);
+# "ours" draws every card in the dashboard's own look (``theme`` light or dark)
+LOOKS = ("venue", "ours")
+
+
+def render_card(f: dict, head: dict, t: int, path: Path, theme: str = "light", look: str = "venue") -> None:
+    """The venue's 1200x630 share card, in its own style (``look="venue"``) or ours."""
+    if look == "venue":
+        import venue_style
+        venue_style.render(f, head, t, path)
+    else:
+        render_card_ours(f, head, t, path, theme)
+
+
+def render_card_ours(f: dict, head: dict, t: int, path: Path, theme: str = "light") -> None:
     """A 1200x630 PNG in the dashboard's own look, drawn at 2x and scaled down for clean edges.
 
     Header as on the site (mark, name, a live chip), the venue and its type, the lead as the
@@ -639,8 +711,8 @@ def render_card(f: dict, head: dict, t: int, path: Path, theme: str = "light") -
             inner = pw - 2 * pad
             d.text((b[0] + pad, top + 18 * S), p["k"], font=_fit(d, p["k"], "Regular", 21 * S, inner, 15 * S),
                    fill=c["text2"], anchor="lt")
-            d.text((b[0] + pad, top + 46 * S), p["v"], font=_fit(d, p["v"], "Bold", 42 * S, inner, 26 * S),
-                   fill=c["text"], anchor="lt")
+            v, vf = fit_value(d, p, lambda z: _font("Bold", z), inner, 42 * S, 24 * S)
+            d.text((b[0] + pad, top + 46 * S), v, font=vf, fill=c["text"], anchor="lt")
             first = p["n"].startswith("#1 ")
             d.text((b[0] + pad, top + 96 * S), p["n"],
                    font=_fit(d, p["n"], "SemiBold" if first else "Regular", 18 * S, inner, 13 * S),
@@ -652,14 +724,13 @@ def render_card(f: dict, head: dict, t: int, path: Path, theme: str = "light") -
     sf = _font("SemiBold", 24 * S)
     y0 = st + 30 * S
     x = M
-    for part, col in (("Source: ", c["strip_text"]), ("cantonvenues.com", c["strip_accent"]),
-                      (" · live Canton DEX data", c["strip_text"])):
+    for part, col in (("Live Canton DEX data from ", c["strip_text"]), ("cantonvenues.com", c["strip_accent"])):
         d.text((x, y0), part, font=sf, fill=col, anchor="lm")
         x += d.textlength(part, font=sf)
     when = stamp(t)
     wf = _font("Regular", 20 * S)
     d.text((W - M, y0), when, font=wf, fill=c["strip_2"], anchor="rm")
-    note = METHOD.get(head["rule"], "")
+    note = f"Independent data, not affiliated with {f['name']}. {METHOD.get(head['rule'], '')}".strip()
     if note:
         d.text((M, st + 66 * S), note, font=_fit(d, note, "Regular", 18 * S, width, 13 * S), fill=c["strip_2"],
                anchor="lm")
@@ -772,7 +843,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
 <main class="wrap">
 {body}
   <footer class="foot">
-    <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="/#contact">Contact</a></p><p>Updated {e(stamp(t))}.</p></div>
+    <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a>, <a href="/#contact">contact</a></p><p>Updated {e(stamp(t))}.</p></div>
     <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees and price impact included, network fees excluded. Volumes are each venue's own 24h figures.</p></div>
     <div><h4>Data</h4><p>Every number on this page is in the open JSON API: <a href="/api/v1/venues.json">venues</a>, <a href="/api/v1/execution.json">execution</a>, <a href="/api/v1/tokens.json">tokens</a>, <a href="/api/v1/lp.json">pools</a>, <a href="/api/v1/perps.json">perps</a>.</p></div>
   </footer>
@@ -830,8 +901,8 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     cv = card_v or t
     url = f"{SITE}/venues/{v['slug']}/"
     image = f"{url}card.png?v={cv}"
-    title = (f"{f['name']} on Canton: live liquidity and prices · Canton Venues" if head["rule"] in PLAIN
-             else f"{f['name']} on Canton: {_lower_first(head['title'])} · Canton Venues")
+    title = (f"{f['name']} on Canton: live liquidity and prices | Canton Venues" if head["rule"] in PLAIN
+             else f"{f['name']} on Canton: {_lower_first(head['title'])} | Canton Venues")
     desc = (f"{head['title']}. {head['sub']}. Live {f['name']} data on Canton Network: volume, "
             "liquidity and best execution, refreshed every five minutes.")
     parts = []
@@ -874,11 +945,15 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     if f.get("tvl") is not None:
         st.append(("In pools", money(f["tvl"])))
     if f.get("tokens"):
-        st.append(("Tokens priced", str(len(f["tokens"]))))
+        listed = f.get("listed") or []
+        ours = [x for x in f["tokens"] if x["symbol"] in listed]
+        st.append(("Markets we price", f"{len(ours)} of {len(listed)}") if len(ours) < len(listed)
+                  else ("Tokens priced", str(len(f["tokens"]))))
     if f.get("deepest") and not f.get("pools"):
         st.append((f"{f['deepest']['symbol']} within 1% of mid", money(f["deepest"]["usd"])))
     if f.get("perp_markets"):
-        st.append(("Perp markets", str(len(f["perp_markets"]))))
+        live = sum(1 for m in f["perp_markets"] if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD)
+        st.append(("Perp markets trading", f"{live} of {len(f['perp_markets'])}"))
     parts.append('  <div class="stats" style="margin-top:16px">' + "".join(
         f'<div class="stat"><div class="k">{e(k)}</div><div class="v num">{e(val)}</div></div>' for k, val in st)
         + "</div>")
@@ -892,7 +967,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
                 continue
             rows.append([f"<b>{label}</b>"] + [
                 f'<span class="{"won" if c and c["won"] else "muted"}">{c["won"]}</span><span class="muted"> of {c["of"]}</span>'
-                if c else '<span class="muted">–</span>' for c in cells])
+                if c else f'<span class="muted">{NA}</span>' for c in cells])
         won = {}
         for r in f["won_rows"]:
             won.setdefault(r["pair"], []).append(SIZE_LABEL.get(r["size"], str(r["size"])))
@@ -919,7 +994,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
             if ob:
                 rows.append([link, f'<span class="muted">{e(x.get("market") or "")}</span>', price(x.get("price_usd")),
                              money(x.get("depth_1pct_usd")),
-                             "–" if x.get("spread_bps") is None else f"{x['spread_bps']:.2f} bp"])
+                             NA if x.get("spread_bps") is None else f"{x['spread_bps']:.2f} bp"])
             else:
                 rows.append([link, price(x.get("price_usd")), money(x.get("liquidity_usd")),
                              money(x.get("depth_1pct_usd"))])
@@ -931,7 +1006,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
 
     if f.get("pools"):
         rows = [[f"<b>{e(p['pair'])}</b>", money(p["tvl_usd"]), money(p["volume_24h_usd"]),
-                 f"{p['fee'] * 100:.2f}%", "–" if p["fee_apr"] is None else f"{p['fee_apr'] * 100:.1f}%"]
+                 f"{p['fee'] * 100:.2f}%", NA if p["fee_apr"] is None else f"{p['fee_apr'] * 100:.1f}%"]
                 for p in f["pools"] if p["tvl_usd"] >= 100][:20]
         parts.append(f"""  <section class="block">
     <h2>Pools</h2>
@@ -942,9 +1017,9 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     if f.get("perp_markets"):
         rows = [[f"<b>{e(m['base'])}</b><span class=\"muted\"> / {e(m['quote'])}</span>",
                  price(m["mark"] or m["last"]),
-                 "–" if m["basis"] is None else f"{m['basis'] * 100:+.2f}%",
-                 "–" if m["funding_rate"] is None else f"{m['funding_rate'] * 100:+.4f}%",
-                 "–" if m["spread_bps"] is None else f"{m['spread_bps']:.2f} bp",
+                 NA if m["basis"] is None else f"{m['basis'] * 100:+.2f}%",
+                 NA if m["funding_rate"] is None else f"{m['funding_rate'] * 100:+.4f}%",
+                 NA if m["spread_bps"] is None else f"{m['spread_bps']:.2f} bp",
                  money(m["open_interest_usd"]), money(m["turnover_24h_usd"])] for m in f["perp_markets"]]
         parts.append(f"""  <section class="block">
     <h2>Perpetuals</h2>
@@ -971,7 +1046,7 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
   <div class="title" style="padding-top:4px"><h1>Every venue we read</h1><p>A page for each Canton venue Canton Venues reads live: volume, liquidity, where it is the best price, and a card to share. Refreshed every five minutes.</p></div>
   <div class="vgrid">{tiles}</div>"""
     first = next(iter(all_facts))
-    return _shell("Canton venues: a live page for every DEX we read · Canton Venues",
+    return _shell("Canton venues: a live page for every DEX we read | Canton Venues",
                   f"Live pages for {len(all_facts)} Canton Network venues: "
                   + ", ".join(f["name"] for f in all_facts.values())
                   + ". Volume, liquidity and best execution, refreshed every five minutes.",
@@ -987,12 +1062,12 @@ def _write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def build(out: Path, data: dict, t: int, cards: bool = True) -> dict:
+def build(out: Path, data: dict, t: int, cards: bool = True, look: str = "venue") -> dict:
     """Write ``out/venues/<slug>/index.html`` (+ ``card.png``) and ``out/venues/index.html``.
 
     Pages are cheap and follow every tick; cards are drawn when ``cards`` is set (the collector
     does it every few ticks) or when a venue has none yet. A venue that is unreachable this tick
-    keeps its last page and card.
+    keeps its last page and card. ``look`` picks the card's style (``LOOKS``).
     """
     all_facts = {s: f for s, f in facts(data).items() if f["status"] in LIVE}
     heads = {s: headline(f) for s, f in all_facts.items()}
@@ -1001,7 +1076,7 @@ def build(out: Path, data: dict, t: int, cards: bool = True) -> dict:
         d = out / "venues" / s
         card = d / "card.png"
         if cards or not card.exists():
-            render_card(f, heads[s], t, card)
+            render_card(f, heads[s], t, card, look=look)
             card_v[s] = t
         else:
             card_v[s] = int(card.stat().st_mtime)
@@ -1015,10 +1090,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--api", type=Path, required=True, help="directory holding venues.json and the rest")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--look", choices=LOOKS, default="venue",
+                    help="venue: each card in its venue's own style; ours: every card in the dashboard's look")
     args = ap.parse_args()
     data = {n: json.loads((args.api / f"{n}.json").read_text())
             for n in ("venues", "tokens", "execution", "lp", "perps")}
-    heads = build(args.out, data, data["venues"]["t"])
+    heads = build(args.out, data, data["venues"]["t"], look=args.look)
     for s, h in heads.items():
         print(f"{s:12} {h['rule']:13} {h['title']} | {h['sub']}")
 

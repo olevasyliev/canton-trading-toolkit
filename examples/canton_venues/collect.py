@@ -399,6 +399,9 @@ class Collector:
             rows.append({k: v[k] for k in ("id", "name", "kind")} | {
                 "note": note, "status": status,
                 "volume_24h_usd": r(vol, 2) if vol is not None else None})
+            if v["id"] == "temple" and self.slow.get("temple_volume"):
+                # Temple's own list of markets that settled in 24h, so a page can say how many we price
+                rows[-1]["markets_24h"] = sorted(self.slow["temple_volume"])
         spot = [x for x in rows if x["kind"] != "Perpetuals" and x["volume_24h_usd"]]
         total = sum(x["volume_24h_usd"] for x in spot)
         priced = sum(x["volume_24h_usd"] for x in spot if x["status"] == "priced")

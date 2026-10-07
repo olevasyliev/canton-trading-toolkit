@@ -246,3 +246,122 @@ def test_a_long_headline_splits_into_two_even_lines():
     widths = [d.textlength(x, font=font) for x in lines]
     assert max(widths) <= 1088 and min(widths) > 0.6 * max(widths)  # no orphaned last word
     assert vp._balanced(d, "word " * 80, font, 1088) is None
+
+
+# === venue-style cards and outward text ======================================
+
+import venue_style as vs  # noqa: E402
+
+BANNED = ("·", "—", "–")  # middle dot, em dash, en dash: none in anything we publish
+
+
+class _Text(HTMLParser):
+    """A page's visible text plus its title and meta contents; styles and scripts left out."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts, self._skip = [], False
+
+    def handle_starttag(self, tag, attrs):
+        self._skip = tag in ("style", "script")
+        a = dict(attrs)
+        if tag == "meta" and a.get("content"):
+            self.parts.append(a["content"])
+        if tag == "img" and a.get("alt"):
+            self.parts.append(a["alt"])
+
+    def handle_endtag(self, tag):
+        self._skip = False
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
+
+
+def test_no_middle_dot_or_dash_in_cards_pages_or_share_text(tmp_path):
+    pytest.importorskip("PIL")
+    d = data()
+    next(v for v in d["venues"]["venues"] if v["id"] == "temple")["markets_24h"] = [
+        "CBTC/USDCx", "CC/USDCx", "eXAU/USDCx"]
+    vp.build(tmp_path, d, T)
+    for s, f in vp.facts(d).items():
+        head = vp.headline(f)
+        card = [head["title"], head["sub"], f"{f['name']} / {f['kind']}", vs.strip_line(), vs.footer_note(f, head),
+                vp.stamp(T)] + [x for p in vp.stats(f) for x in (p["k"], p["v"], p["n"])]
+        page = _Text()
+        page.feed((tmp_path / "venues" / s / "index.html").read_text())
+        for text in card + page.parts + [vp.share_text(f, head)]:
+            assert not any(b in text for b in BANNED), (s, text)
+    index = _Text()
+    index.feed((tmp_path / "venues" / "index.html").read_text())
+    assert not any(b in x for x in index.parts for b in BANNED)
+    assert vs.strip_line() == "Live Canton DEX data from cantonvenues.com"
+
+
+def test_token_tile_names_the_tokens_and_says_what_we_leave_out():
+    d = data()
+    f = vp.facts(d)
+    tile = vp.token_tile(f["cantex"])
+    assert tile["k"] == "Tokens priced" and tile["names"] == ["USDCx"] and "USDCx" in tile["v"]
+    # the venue lists a market we do not price: the tile says how many of its markets we cover
+    next(v for v in d["venues"]["venues"] if v["id"] == "temple")["markets_24h"] = [
+        "CBTC/USDCx", "CC/USDCx", "eXAU/USDCx"]
+    f = vp.facts(d)
+    tile = next(p for p in vp.stats(f["temple"]) if p.get("names"))
+    assert tile["k"] == "Markets we price" and tile["v"] == "CBTC"
+    assert tile["n"] == "1 of Temple's 3 active markets"
+    assert any("we price 1 of them as tokens (CBTC)" in m for m in f["temple"]["method"])
+    # many names: four at most, then a count of the rest
+    assert vp.names_text(["A", "B", "C", "D", "E", "F"]) == "A, B, C, D +2"
+    assert vp.names_text(["A", "B", "C"]) == "A, B, C"
+
+
+def test_a_long_name_list_drops_names_before_it_shrinks_past_the_floor():
+    ImageDraw = pytest.importorskip("PIL.ImageDraw")
+    Image = pytest.importorskip("PIL.Image")
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    p = {"k": "Tokens priced", "names": ["USDC.B", "USDCx", "EDELx", "eXAU", "CBTC", "HECTO"]}
+    text, font = vp.fit_value(d, p, lambda z: vp._font("Bold", z), 440, 84, 44)
+    assert d.textlength(text, font=font) <= 440 and font.size >= 44
+    assert text.startswith("USDC.B") and text.endswith(f"+{6 - len(text.split(', '))}")
+
+
+def test_perp_tile_agrees_with_the_headline():
+    d = data()
+    d["perps"]["markets"].append(dict(d["perps"]["markets"][-1], base="XAU", symbol="XAU", turnover_24h_usd=1.0))
+    f = vp.facts(d)["ekiden"]
+    head = vp.headline(f)
+    tile = vp.perp_tile(f)
+    assert head["sub"].startswith("3 markets trading")
+    assert tile["names"] == ["BTC", "ETH", "CC"] and tile["n"] == "3 trading, 4 listed"
+    assert vp.perp_tile(vp.facts(data())["rocky"])["n"] == "2 listed, all trading"
+
+
+def test_style_table_covers_every_venue_with_open_fonts(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    assert set(vs.STYLES) == {v["slug"] for v in vp.VENUES}
+    keys = {"source", "bg", "ink", "muted", "accent", "rule", "tile", "tile_edge", "tile_label", "tile_ink",
+            "tile_note", "up", "head", "label", "num", "body", "head_case", "label_case", "track", "radius",
+            "border"}
+    licences = {p.name.split("-")[0] for p in vp.FONTS.glob("*OFL.txt")} | {"Inter"}  # Inter's is OFL.txt
+    for slug, s in vs.STYLES.items():
+        assert keys <= set(s), (slug, keys - set(s))
+        assert s["source"].startswith("https://"), slug
+        for face in {s["head"], s["label"], s["num"], s["body"], s.get("names", s["num"])}:
+            assert (vp.FONTS / f"{face}.ttf").exists(), face
+            assert face.split("-")[0] in licences, face
+    # every venue renders in its own style, 1200x630, with our strip at the foot
+    f = vp.facts(data())
+    for slug, x in f.items():
+        out = tmp_path / f"{slug}.png"
+        vs.render(x, vp.headline(x), T, out)
+        with Image.open(out) as im:
+            assert im.size == (1200, 630)
+            assert im.convert("RGB").getpixel((1190, 620)) == vp._hex(vs.OURS["strip"])
+
+
+def test_our_own_look_stays_available(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    vp.build(tmp_path, data(), T, look="ours")
+    with Image.open(tmp_path / "venues" / "temple" / "card.png") as im:
+        assert im.convert("RGB").getpixel((5, 300)) == vp._hex(vp.THEMES["light"]["bg"])
