@@ -90,7 +90,7 @@ def test_every_live_venue_gets_a_page_and_closed_ones_do_not():
     assert f["rocky"]["perp_volume"] == 4_600_000
 
 
-def test_headline_is_the_first_thing_a_venue_leads():
+def test_headline_is_the_venues_best_fact():
     f = vp.facts(data())
     h = {s: vp.headline(x) for s, x in f.items()}
     assert h["temple"]["rule"] == "spot_volume" and "$34M" in h["temple"]["sub"]
@@ -98,8 +98,10 @@ def test_headline_is_the_first_thing_a_venue_leads():
     assert h["temple"]["next"] == "Cantex"  # runner-up by spot volume
     assert h["cantex"]["rule"] == "kind_volume" and h["cantex"]["title"] == "The largest AMM on Canton by volume"
     assert h["rocky"]["rule"] == "perp_volume"
-    # derivatives coverage is not confirmed by any outside list: scoped to what we read
-    assert h["rocky"]["title"] == "The largest perps venue among the Canton venues we read"
+    # derivatives coverage is not confirmed by any outside list: stated plainly, the scope in one line under it
+    assert h["rocky"]["title"] == "The largest perps venue" and h["rocky"]["scope"] == "read"
+    assert vp.head_scope(f["rocky"], h["rocky"]) == "Based on the 7 Canton venues with public market data."
+    assert vp.head_scope(f["temple"], h["temple"]) == ""  # confirmed chain-wide: no scope line
     # Tradecraft wins both $50K CC-pair quotes, but its first lead is its pool liquidity, now on its card;
     # the runner-up is kept in code for the margin rule
     tc = f["tradecraft"]["leads"][0]
@@ -168,12 +170,16 @@ def test_method_lines_never_repeat():
     assert vp.method_lines(["MainNet tickers.", "MainNet tickers."]) == ["MainNet tickers."]
 
 
-def test_card_ranks_only_the_top_half():
+def test_card_ranks_only_the_top_half_and_never_of_two():
     panels = {p["k"]: p for p in vp.stats(vp.facts(data())["ekiden"])}
-    # #2 of 2 is not shown; Ekiden reports quote-token turnover, not dollars
-    assert panels["Perps volume, 24h"]["n"] == "quote-token turnover"
+    # #2 of 2 is not shown, and no method on the tile (it is on the page)
+    assert panels["Perps volume, 24h"]["n"] == ""
+    # #1 of 2 shows as #1 alone
+    assert {p["k"]: p for p in vp.stats(vp.facts(data())["rocky"])}["Perps volume, 24h"]["n"] == "#1"
     panels = {p["k"]: p for p in vp.stats(vp.facts(data())["temple"])}
-    assert panels["Spot volume, 24h"]["n"] == "#1 of 5 spot venues reporting volume"
+    assert panels["Spot volume, 24h"]["n"] == "#1 of 5"
+    assert vp.ordinal_rank(3, 5) == "#3 of 5" and vp.ordinal_rank(4, 5) == "" and vp.ordinal_rank(2, 2) == ""
+    assert vp.page_rank(5, 5) == "#5 of 5" and vp.page_rank(1, 2) == "#1" and vp.page_rank(2, 2) == ""
 
 
 class _Meta(HTMLParser):
@@ -318,18 +324,22 @@ def test_no_middle_dot_or_dash_in_cards_pages_or_share_text(tmp_path):
     assert vs.strip_line() == "Live Canton DEX data from cantonvenues.com"
 
 
-def test_token_tile_names_the_tokens_and_says_what_we_leave_out():
+def test_token_tile_names_the_tokens_and_a_listing_venue_its_own_markets():
     d = data()
     f = vp.facts(d)
     tile = vp.token_tile(f["cantex"])
-    assert tile["k"] == "Tokens priced" and tile["names"] == ["USDCx"] and "USDCx" in tile["v"]
-    # the venue lists a market we do not price: the tile says how many of its markets we cover
-    next(v for v in d["venues"]["venues"] if v["id"] == "temple")["markets_24h"] = [
-        "CBTC/USDCx", "CC/USDCx", "eXAU/USDCx"]
+    assert tile["k"] == "Tokens" and tile["names"] == ["USDCx"] and "USDCx" in tile["v"]
+    # the venue publishes its own market list: the tile is that list, in plain words, nothing "excluded"
+    temple = next(v for v in d["venues"]["venues"] if v["id"] == "temple")
+    temple["markets_24h"] = ["CBTC/USDCx", "CC/USDCx", "eXAU/USDCx"]
+    temple["markets_24h_usd"] = {"CBTC/USDCx": 17_100_000.0, "CC/USDCx": 2_400_000.0, "eXAU/USDCx": 8_800_000.0}
     f = vp.facts(d)
-    tile = next(p for p in vp.stats(f["temple"]) if p.get("names"))
-    assert tile["k"] == "Markets we price" and tile["v"] == "CBTC"
-    assert tile["n"] == "1 of 3, CC/USDCx, eXAU/USDCx excluded"
+    tiles = {p["k"]: p for p in vp.stats(f["temple"])}
+    assert tiles["Markets"]["names"] == ["CBTC", "CC", "eXAU"] and tiles["Markets"]["n"] == "3 traded in the last 24h"
+    # in place of the keyed book's depth: its share and its largest market, computed
+    assert tiles["Largest market"]["v"] == "$17.1M" and tiles["Largest market"]["n"] == "CBTC/USDCx, 24h"
+    assert tiles["Share of spot volume"]["n"] == "of Canton DEX spot volume"
+    assert not any("excluded" in p["n"] or "we price" in p["k"].lower() for p in vp.stats(f["temple"]))
     assert any("we price 1 of them as tokens (CBTC)" in m for m in f["temple"]["method"])
     # many names: four at most, then a count of the rest
     assert vp.names_text(["A", "B", "C", "D", "E", "F"]) == "A, B, C, D +2"
@@ -399,10 +409,10 @@ def test_an_unpriced_cc_pool_still_counts_from_its_cc_side():
                                   "reason": "token not named by any venue we price"}]
     f = vp.facts(d)["pool-party"]
     assert f["tvl"] == 66_000 and f["pool_n"] == 2 and f["pool_priced"] == 1
-    assert vp.headline({**f, "leads": []})["sub"] == "2 CC pools, $66K in liquidity, 1 priced"
-    assert vp.pools_text(f) == "2 CC pools, 1 priced"
+    assert vp.headline({**f, "leads": []})["sub"] == "$66K in liquidity across 2 CC pools"
+    assert vp.pools_text(f) == "2 CC pools"  # no "1 priced": every pool counts from its CC side
     tiles = {p["k"]: p for p in vp.stats(f)}
-    assert tiles["In pools"]["v"] == "$66K" and tiles["In pools"]["n"] == "2 CC pools, 1 priced"
+    assert tiles["In pools"]["v"] == "$66K" and tiles["In pools"]["n"] == "2 CC pools"
     assert tiles["Largest pool"]["n"] == "CC and an unnamed token"  # the unnamed pool is the largest
     assert any("counted from the CC side" in m for m in f["method"])
     # the same rule for every AMM: an unpriced pool on Cantex counts in its total and its pool count
@@ -418,7 +428,10 @@ def test_volume_is_labelled_as_the_venue_reports_it_only_when_it_reports_dollars
     assert vp.volume_note("cantex", 0.1177) == "CC volume at $0.1177 per CC"
     assert vp.volume_note("rocky", 0.12) == "quote-token turnover"
     pp = {p["k"]: p for p in vp.stats(f["pool-party"])}
-    assert pp["Spot volume, 24h"]["n"] == "CC side at $0.1200 per CC"
+    # the tile carries no method ("CC side at $0.12 per CC"): bottom of the ranking, under 1% share
+    assert pp["Spot volume, 24h"]["n"] == ""
+    cx = {p["k"]: p for p in vp.stats(f["cantex"])}
+    assert cx["Spot volume, 24h"]["n"] == "#2 of 5"
     head = vp.headline(f["pool-party"])
     assert vp.card_notes(f["pool-party"], head) == "Independent data, not affiliated with Pool Party."
     method = vp.card_method(f["pool-party"], head)
@@ -466,8 +479,9 @@ def test_on_canton_only_where_an_outside_list_confirms_it():
     d = data()
     d["summary"]["ecosystem"]["venues"] = []  # no outside list: nothing is claimed for the whole chain
     h = {s: vp.headline(x) for s, x in vp.facts(d).items()}
-    assert h["temple"]["title"] == "The largest spot venue among the Canton venues we read"
-    assert h["cantex"]["title"] == "The largest AMM by volume among the Canton venues we read"
+    assert h["temple"]["title"] == "The largest spot venue" and h["temple"]["scope"] == "read"
+    assert h["cantex"]["title"] == "The largest AMM by volume"
+    assert vp.head_scope(vp.facts(d)["temple"], h["temple"]).startswith("Based on the 7 Canton venues")
     # DefiLlama lists a bigger spot venue than ours: Temple's lead stays scoped to what we read
     d["summary"]["ecosystem"]["venues"] = [{"name": "Temple", "volume_24h": 1}, {"name": "Elsewhere", "volume_24h": 9}]
     assert vp.headline(vp.facts(d)["temple"])["scope"] == "read"
@@ -483,11 +497,11 @@ def test_a_keyed_book_never_appears_on_the_card():
     d = data()
     f = vp.facts(d)["temple"]
     tiles = {p["k"]: p for p in vp.stats(f)}
-    assert "Within 1% of mid" not in tiles and tiles["Share of spot volume"]["v"] == "83%"
+    assert "Book depth within 1%" not in tiles and tiles["Share of spot volume"]["v"] == "83%"
     assert not any(x["rule"] == "token_depth" for x in f["leads"])
-    # Rocky's book is public: its depth tile stays and names the pair
+    # Rocky's book is public: its depth tile stays, labelled as book depth, and names the pair
     rocky = {p["k"]: p for p in vp.stats(vp.facts(d)["rocky"])}
-    assert rocky["Within 1% of mid"]["n"] == "CBTC/USDCx book"
+    assert rocky["Book depth within 1%"]["n"] == "CBTC/USDCx"
 
 
 def test_one_money_style_and_tokens_lead_with_non_stablecoins():
@@ -504,7 +518,9 @@ def test_card_footer_is_one_short_line_and_the_method_moves_to_the_page(tmp_path
     vp.build(tmp_path, data(), T)
     for slug, f in vp.facts(data()).items():
         head = vp.headline(f)
-        assert vp.card_notes(f, head) == f"Independent data, not affiliated with {f['name']}."
+        scope = vp.head_scope(f, head)
+        assert vp.card_notes(f, head) == (f"{scope} Independent, not affiliated with {f['name']}." if scope
+                                          else f"Independent data, not affiliated with {f['name']}.")
         page = (tmp_path / "venues" / slug / "index.html").read_text()
         for p in vp.stats(f):
             note = vp.metric_note(p["m"], f)
@@ -525,7 +541,7 @@ def test_token_count_names_and_footer_apply_the_1k_rule_on_this_venue():
     assert (cx["n"], cx["names"]) == (2, ["HANDL", "USDCx"])
     for slug, t in (("tradecraft", tc), ("cantex", cx)):
         tile = vp.token_tile(f[slug])
-        assert tile["names"] == t["names"] and tile["n"] == f"{t['n']} with $1K+ here"
+        assert tile["names"] == t["names"] and tile["n"] == f"{t['n']} with $1K+ liquidity"
         head = vp.headline(f[slug])
         assert (f"Tokens: the {t['n']} with $1K or more of liquidity on {f[slug]['name']} itself."
                 in vp.card_method(f[slug], head))
@@ -553,9 +569,9 @@ def test_page_lists_thin_tokens_apart_and_counts_only_the_rest(tmp_path):
 
 def test_best_price_sub_names_what_you_receive():
     row = {"symbol": "HANDL", "kind": "cc", "side": "sell", "edge_bps": 87.0}
-    assert vp.best_quote_sub(row) == ("0.87% more HANDL than the next venue we read, pool fees and price "
+    assert vp.best_quote_sub(row) == ("0.87% more HANDL than the next best venue, pool fees and price "
                                       "impact included, network fees excluded")
-    assert vp.best_quote_sub({**row, "side": "buy"}).startswith("0.87% more CC than the next venue")
+    assert vp.best_quote_sub({**row, "side": "buy"}).startswith("0.87% more CC than the next best venue")
     assert vp.best_quote_sub({**row, "kind": "usd", "side": "sell"}).startswith("0.87% more dollars ")
     d = data()
     d["execution"]["pairs"].append({"key": "HANDL", "kind": "cc", "symbol": "HANDL", "venues": ["cantex", "oneswap"],
@@ -563,14 +579,14 @@ def test_best_price_sub_names_what_you_receive():
     d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
         "cantex": {"liquidity_usd": 50_000}, "oneswap": {"liquidity_usd": 100_000}}})
     lead = next(x for x in vp.facts(d)["oneswap"]["leads"] if x["rule"] == "best_quote")
-    assert lead["sub"].startswith("0.87% more HANDL than the next venue we read")
+    assert lead["sub"].startswith("0.87% more HANDL than the next best venue")
 
 
 def test_a_venue_can_still_be_set_to_a_plain_card():
     assert all(v.get("lead", True) for v in vp.VENUES)  # every venue shows its lead today
     f = vp.facts(data())["tradecraft"]
     h = vp.headline({**f, "venue": {**f["venue"], "lead": False}})
-    assert h["rule"] == "pools" and h["title"] == "Tradecraft, priced live on Canton"
+    assert h["rule"] == "pools" and h["title"] == "Tradecraft on Canton"
     assert "#1" not in vp.lead_html(f, h) and "most" not in vp.share_text(f, h).lower()
     tiles = [p["k"] for p in vp.stats(f)]
     assert not any("1% of mid" in k for k in tiles) and "Largest pool" in tiles
@@ -592,7 +608,7 @@ def test_a_venue_whose_own_network_fee_is_unknown_never_leads_on_price():
     f = _edel(data(), 10_000, {"poolparty": 1.02, "tradecraft": 1.0})
     assert not any(x["rule"] == "best_quote" for x in f["pool-party"]["leads"])
     assert vp.headline(f["pool-party"])["rule"] == "pools"
-    assert vp.headline(f["pool-party"])["title"] == "Pool Party, priced live on Canton"
+    assert vp.headline(f["pool-party"])["title"] == "Pool Party on Canton"
     # OneSwap's documented $1.5-2 counts: charged $2 (2 bp at $10K), the runner-up charged nothing
     f = _edel(data(), 10_000, {"oneswap": 1.02, "tradecraft": 1.0})
     lead = next(x for x in f["oneswap"]["leads"] if x["rule"] == "best_quote")
@@ -682,15 +698,15 @@ def test_wider_categories_give_each_venue_a_true_lead():
 
     # the most traded CC/EDELx pool (+25%) and the best fee APR on it: Pool Party now leads something
     pp = rules("pool-party")
-    assert pp["pair_volume"]["title"] == "The most traded CC/EDELx pool among the Canton venues we read"
+    assert pp["pair_volume"]["title"] == "The most traded CC/EDELx pool"
     assert pp["pair_volume"]["margin"] == pytest.approx(0.25)
     assert pp["pair_apr"]["big"] == "40.0%" and pp["pair_apr"]["next"] == "Cantex"
     assert vp.headline(f["pool-party"])["rule"] == "pair_volume"
     # the only venue with a token: no other venue lists HECTO at all
-    assert rules("oneswap")["unique_token"]["title"] == "The only HECTO pool among the Canton venues we read"
+    assert rules("oneswap")["unique_token"]["title"] == "The only HECTO pool"
     # another venue lists SBC, but under $1K: the claim says so
     tc = rules("tradecraft")["unique_token"]
-    assert tc["title"] == "The only SBC pool with $1K or more among the Canton venues we read"
+    assert tc["title"] == "The only SBC pool with $1K or more"
     assert tc["next"] is None and tc["margin"] is None
     # an unmeasured market elsewhere is not thin: no "only MOD" claim
     assert "unique_token" not in rules("cantex") or "MOD" not in rules("cantex")["unique_token"]["title"]
@@ -767,7 +783,9 @@ def test_venue_history_series():
     f = vp.facts({**data(), "history": {"daily": {"temple": {"source": "defillama", "points": three}},
                                         "daily_total": tot3, "hourly": st["hourly"]}})
     titles = [(s["title"], s["sub"]) for s in f["temple"]["series"]]
-    assert titles[0][0] == "Volume by day" and "DefiLlama" in titles[0][1] and "since 5 Oct 2026" in titles[0][1]
+    # the chart's own line never names the outside source; the page credits it once in its method notes
+    assert titles[0][0] == "Volume by day" and "DefiLlama" not in titles[0][1] and "since 5 Oct 2026" in titles[0][1]
+    assert f["temple"]["series"][0]["source"] == "defillama"
     assert f["temple"]["series"][1]["pts"][-1][1] == pytest.approx(0.4)
 
 
@@ -876,3 +894,168 @@ def test_bar_rows_group_thin_and_need_two_bars():
     assert rows == [{"label": "a", "value": 5_000.0},
                     {"label": "1 other pool", "value": 999.0, "other": True, "names": ["b"]}]
     assert vp.book_label("CBTC-USDCX") == "CBTC/USDCx" and vp.book_label("eXAU/USDCx") == "eXAU/USDCx"
+
+
+# === shareability pass: best fact, no outside list named, plain words (2026-10-08) ===
+
+def _cc_pair(sym, rows, liq):
+    """A CC pair quoted on several venues, each with ``liq`` dollars of pool liquidity."""
+    return ({"key": sym.upper(), "kind": "cc", "symbol": sym, "venues": list(liq), "rows": rows},
+            {"symbol": sym, "key": sym.upper(), "venues": {v: {"liquidity_usd": x} for v, x in liq.items()}})
+
+
+def _with_trades(d, wins_for, n_tokens=3, size=10_000, liq=None, edge=1.01):
+    """``n_tokens`` CC pairs on OneSwap and Tradecraft at ``size``, both directions, each won by
+    ``wins_for`` by ``edge``; every pool holds ``liq`` (default 20x the size)."""
+    liq = liq or size * 20
+    for k in range(n_tokens):
+        out = {"oneswap": 1.0, "tradecraft": 1.0}
+        out[wins_for] = edge
+        rows = [_row(side, size, dict(out), wins_for) for side in ("sell", "buy")]
+        pair, tok = _cc_pair(f"TK{k}", rows, {"oneswap": liq, "tradecraft": liq})
+        d["execution"]["pairs"].append(pair)
+        d["tokens"]["tokens"].append(tok)
+    return d
+
+
+def test_a_count_of_trades_won_beats_one_quote_and_needs_a_known_fee():
+    # OneSwap prices 6 of 6 CC trades best at $10K, after its $2 network fee: broader than any one quote
+    f = vp.facts(_with_trades(data(), "oneswap"))["oneswap"]
+    rules = [x["rule"] for x in f["leads"]]
+    assert rules.index("best_count") < rules.index("best_quote")
+    head = vp.headline(f)
+    assert head["rule"] == "best_count" and head["title"] == "Best price on 6 of 6 CC trades at $10K"
+    assert head["sub"] == "Pool fees, price impact and network fees included" and not vp.is_ranked(head)
+    assert "#1" not in vp.lead_html(f, head) and head["big"] == "6 of 6"
+    # the same trades won by Tradecraft: its own network fee is unknown, so no price fact at all
+    f = vp.facts(_with_trades(data(), "tradecraft"))["tradecraft"]
+    assert not any(x["rule"] in ("best_count", "best_quote") for x in f["leads"])
+    assert f["counts"][("cc", 10_000)]["won"] >= 6  # counted, and ready once the fee is known
+    vp.NETWORK_FEE["tradecraft"] = ("usd", 0.1, 0.1)
+    try:
+        rules = [x["rule"] for x in vp.facts(_with_trades(data(), "tradecraft"))["tradecraft"]["leads"]]
+    finally:
+        del vp.NETWORK_FEE["tradecraft"]
+    # a whole-venue ranking (its pool liquidity) still outranks a count of trades
+    assert rules[0] == "tvl" and "best_count" in rules
+
+
+def test_a_count_needs_a_majority_real_markets_and_1k():
+    # a minority of trades won is not a fact worth a headline
+    d = _with_trades(data(), "oneswap", n_tokens=2)
+    _with_trades(d, "tradecraft", n_tokens=3)
+    for p in d["execution"]["pairs"][-3:]:  # rename the second batch so tokens do not collide
+        p["symbol"] = p["key"] = "Z" + p["symbol"]
+    for t in d["tokens"]["tokens"][-3:]:
+        t["symbol"] = t["key"] = "Z" + t["symbol"]
+    c = vp.facts(d)["oneswap"]["counts"][("cc", 10_000)]
+    assert (c["won"], c["of"]) == (4, 10)
+    assert not any(x["rule"] == "best_count" for x in vp.facts(d)["oneswap"]["leads"])
+    # a $10K trade between pools smaller than $10K is not counted at all
+    f = vp.facts(_with_trades(data(), "oneswap", liq=5_000))["oneswap"]
+    assert ("cc", 10_000) not in f["counts"] and not any(x["rule"] == "best_count" for x in f["leads"])
+    # nor under $1K
+    f = vp.facts(_with_trades(data(), "oneswap", size=100))["oneswap"]
+    assert not any(x["rule"] == "best_count" for x in f["leads"])
+    # and a win the leader's own network fee wipes out is not a win: $2 is 20 bp at $1K
+    f = vp.facts(_with_trades(data(), "oneswap", size=1_000, edge=1.001))["oneswap"]
+    assert f["counts"][("cc", 1_000)]["won"] == 0
+
+
+def test_the_broadest_fact_leads():
+    d = data()
+    d["lp"]["pools"] += [_pool("poolparty", "CC/EDELx", 90_000, vol=50_000, apr=0.4),
+                         _pool("cantex", "CC/EDELx", 300_000, vol=40_000, apr=0.1)]
+    f = vp.facts(d)
+    scores = [x["score"] for x in f["pool-party"]["leads"]]
+    assert scores == sorted(scores, reverse=True)
+    # one pool's volume beats that pool's fee APR
+    assert [x["rule"] for x in f["pool-party"]["leads"]][:2] == ["pair_volume", "pair_apr"]
+    # the single largest pool of any venue beats "the largest CC/USDCx pool"
+    tc = [x["rule"] for x in f["tradecraft"]["leads"]]
+    assert tc.index("largest_pool") < tc.index("pool_tvl")
+    lp = next(x for x in f["tradecraft"]["leads"] if x["rule"] == "largest_pool")
+    assert lp["title"] == "The largest liquidity pool" and lp["sub"] == "$1.2M in its CC/USDCx pool"
+    assert all((rule, scope) in vp.SCORE for rule in vp.CATEGORIES for scope in ("read",))
+
+
+def test_no_outside_list_is_named_in_public_copy_but_its_charts_are_credited(tmp_path):
+    pytest.importorskip("PIL")
+    d = {**data(), "history": _hist(vp.MIN_HOURLY_POINTS, vp.MIN_DAILY_POINTS)}
+    vp.build(tmp_path, d, T)
+    for slug, f in vp.facts(d).items():
+        head = vp.headline(f)
+        card = [head["title"], head["sub"], vs.footer_note(f, head), vp.share_text(f, head)]
+        card += [x for p in vp.stats(f) for x in (p["k"], p["v"], p["n"])]
+        assert not any("llama" in x.lower() for x in card), slug
+        page = (tmp_path / "venues" / slug / "index.html").read_text()
+        meta = _Meta()
+        meta.feed(page)
+        assert not any("llama" in (x or "").lower() for x in [meta.title, *meta.meta.values()])
+        # the only mention: one credit line in the method block at the foot, under charts that use it
+        body = _main_text(page)
+        head_part, _, foot = body.partition(f"How we track {f['name']}")
+        assert "llama" not in head_part.lower() and "we read" not in body
+        assert foot.count("DefiLlama") == (1 if slug == "temple" else 0), slug
+        assert ("DefiLlama" in foot) == (vp.HISTORY_CREDIT in foot)
+    idx = (tmp_path / "venues" / "index.html").read_text()
+    head_part, _, foot = _main_text(idx).partition("Leads at:")
+    assert "llama" not in head_part.lower() and foot.count("DefiLlama") == 1
+
+
+def test_a_scope_line_sits_under_an_unconfirmed_ranking_on_card_and_page(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
+    f = vp.facts(data())
+    line = "Based on the 7 Canton venues with public market data."
+    rocky = vp.headline(f["rocky"])
+    assert "among" not in rocky["title"] and vs.footer_note(f["rocky"], rocky).startswith(line)
+    page = (tmp_path / "venues" / "rocky" / "index.html").read_text()
+    assert line in _main_text(page).partition("How we track Rocky")[2]
+    assert line in _Meta_of(page)["og:description"]
+    # confirmed chain-wide, or no ranking at all: no line
+    for slug in ("temple", "oneswap"):
+        page = (tmp_path / "venues" / slug / "index.html").read_text()
+        assert line not in page or slug == "oneswap" and vp.headline(f[slug])["rule"] not in vp.PLAIN
+    assert vs.footer_note(f["temple"], vp.headline(f["temple"])) == "Independent data, not affiliated with Temple."
+    # the count follows the venues read live
+    d = data()
+    next(v for v in d["venues"]["venues"] if v["id"] == "ekiden")["status"] = "down"
+    assert vp.facts(d)["rocky"]["tracked_n"] == 6
+
+
+def _Meta_of(page):
+    p = _Meta()
+    p.feed(page)
+    return p.meta
+
+
+def test_venues_index_top_line_coming_block_and_one_lead_per_row(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
+    idx = (tmp_path / "venues" / "index.html").read_text()
+    text = _main_text(idx)
+    assert "Every Canton DEX with public market data, live." in text
+    coming = idx.split("<h2>Coming to Canton Venues</h2>", 1)[1].split("</section>", 1)[0]
+    assert "Trading on Canton, no public market data yet: " + ", ".join(vp.COMING) + "." in coming
+    assert vp.COMING == ["Trade.Fast", "Swap.Monster", "Kairo", "Canborsa", "Silvana"]
+    assert 'href="/#contact">Get in touch</a>' in coming
+    # each row carries its lead twice in the markup, but only one is ever shown: the column on a wide
+    # screen (hide-sm hides it under 720px), the tagline under the name on a phone (hidden above)
+    row = re.search(r'<tr class="click" data-href="rocky/">(.*?)</tr>', idx).group(1)
+    assert row.count("Largest perps venue") == 2
+    assert '<div class="tagline">' in row and 'class="l lead hide-sm"' in row
+    assert "table.vt .tagline { display: none;" in idx
+    narrow = [b.split("@media", 1)[0] for b in idx.split("@media (max-width: 720px) {")[1:]]
+    assert any(".hide-sm { display: none; }" in b for b in narrow)
+    assert any("table.vt .tagline { display: block; }" in b for b in narrow)
+    # an order book's depth is labelled, never shown bare in the liquidity column
+    assert "book depth within 1%" in row
+    # a fact that is not a ranking carries no #1
+    assert "#1</b> Best price" not in idx
+
+
+def test_publish_guard_does_not_watch_a_count_of_trades():
+    import publish_guard as pg
+    figs = pg.card_figures({}, {"rule": "best_count", "value": 6}, [])
+    assert not any(k.startswith("headline:") for k in figs)
