@@ -20,7 +20,6 @@ import argparse
 import html
 import json
 import os
-import random
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -507,93 +506,165 @@ def _fit(draw, text: str, weight: str, size: int, width: int, floor: int):
     return _font(weight, size)
 
 
-PINK = (255, 122, 196)
-CYAN = (110, 231, 245)
-SUB = (163, 236, 245)
-GREY = (150, 164, 186)
+def _balanced(draw, text: str, font, width: int) -> list[str] | None:
+    """Two lines of near-equal width, so a long headline never ends on one orphaned word; None
+    when no split fits."""
+    words = text.split()
+    best = None
+    for n in range(1, len(words)):
+        a, b = " ".join(words[:n]), " ".join(words[n:])
+        w = max(draw.textlength(a, font=font), draw.textlength(b, font=font))
+        if w <= width and (best is None or w < best[0]):
+            best = (w, [a, b])
+    return best[1] if best else None
 
 
-def render_card(f: dict, head: dict, t: int, path: Path) -> None:
-    """A 1200x630 PNG, drawn at 2x and scaled down so edges and text are smooth."""
+def _hex(c: str) -> tuple[int, int, int]:
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+
+# The dashboard's own tokens (site/index.html :root and [data-theme="dark"]), so a card reads as a
+# piece of cantonvenues.com. Light is the default: it is the site's default theme, and on X's dark
+# timeline a white card stands apart where a navy one would sink into the page.
+THEMES = {
+    "light": {"bg": "#ffffff", "bg2": "#f8fafd", "line": "#eff2f5", "line2": "#e3e7ee", "text": "#0d1421",
+              "text2": "#58667e", "text3": "#a1a7bb", "accent": "#3861fb", "shadow": True,
+              "strip": "#0d1421", "strip_text": "#ffffff", "strip_2": "#a1a7bb", "strip_accent": "#6188ff"},
+    "dark": {"bg": "#0d1421", "bg2": "#171924", "line": "#222531", "line2": "#323546", "text": "#ffffff",
+             "text2": "#a1a7bb", "text3": "#646b80", "accent": "#6188ff", "shadow": False,
+             "strip": "#171924", "strip_text": "#ffffff", "strip_2": "#a1a7bb", "strip_accent": "#6188ff"},
+}
+UP = "#16c784"
+DOWN = "#ea3943"
+# the four-square mark from the site's header svg (viewBox 26): x, y, w, h, fill
+LOGO = ((1, 1, 11, 11, UP), (14, 1, 11, 7, "#3861fb"), (14, 10, 11, 15, None), (1, 14, 11, 11, DOWN))
+
+
+def _mix(a, b, k: float):
+    return tuple(round(x * k + y * (1 - k)) for x, y in zip(a, b))
+
+
+def draw_logo(d, x: float, y: float, size: float, text_rgb, bg_rgb) -> None:
+    """The site's mark at ``size`` px; its dark square is the text colour at 85%, as in the svg."""
+    k = size / 26
+    for rx, ry, w, h, c in LOGO:
+        fill = _hex(c) if c else _mix(text_rgb, bg_rgb, 0.85)
+        d.rounded_rectangle((x + rx * k, y + ry * k, x + (rx + w) * k, y + (ry + h) * k), radius=3 * k, fill=fill)
+
+
+def render_card(f: dict, head: dict, t: int, path: Path, theme: str = "light") -> None:
+    """A 1200x630 PNG in the dashboard's own look, drawn at 2x and scaled down for clean edges.
+
+    Header as on the site (mark, name, a live chip), the venue and its type, the lead as the
+    headline, up to four stat tiles shaped like the dashboard's, and a dark source strip at the
+    foot naming cantonvenues.com, the time and how the headline was measured.
+    """
     from PIL import Image, ImageDraw, ImageFilter
 
+    c = {k: (_hex(v) if isinstance(v, str) else v) for k, v in THEMES[theme].items()}
     S = 2
     W, H = 1200 * S, 630 * S
-    # navy to teal, corner to corner
-    base = Image.new("RGB", (2, 2))
-    base.putdata([(8, 14, 38), (10, 34, 66), (9, 30, 60), (12, 92, 104)])
-    img = base.resize((W, H), Image.BICUBIC)
-    glow = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(glow).ellipse((W * 0.55, -H * 0.4, W * 1.3, H * 0.7), fill=70)
-    glow = glow.filter(ImageFilter.GaussianBlur(160 * S))
-    img = Image.composite(Image.new("RGB", (W, H), (40, 120, 170)), img, glow)
-    # faint stars, the same sky every time for a venue
-    rnd = random.Random(f["venue"]["slug"])
-    stars = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stars)
-    for _ in range(170):
-        x, y, r = rnd.uniform(0, W), rnd.uniform(0, H), rnd.uniform(0.6, 1.8) * S
-        sd.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, rnd.randint(25, 120)))
-    img = Image.alpha_composite(img.convert("RGBA"), stars)
+    M = 56 * S
+    img = Image.new("RGB", (W, H), c["bg"])
     d = ImageDraw.Draw(img)
-    M = 64 * S
 
-    # brand mark and name, as on the site
-    for x, y, w, h, c in ((0, 0, 11, 11, (22, 199, 132)), (13, 0, 11, 7, (56, 97, 251)),
-                          (13, 9, 11, 15, (235, 240, 248)), (0, 13, 11, 11, (234, 57, 67))):
-        d.rounded_rectangle((M + x * S * 1.3, M + y * S * 1.3, M + (x + w) * S * 1.3, M + (y + h) * S * 1.3),
-                            radius=3 * S, fill=c)
-    d.text((M + 42 * S, M - 3 * S), "Canton Venues", font=_font("SemiBold", 26 * S), fill=(255, 255, 255))
-    tag = f"{f['name'].upper()}  ·  {f['kind'].upper()}"
-    tf = _font("SemiBold", 20 * S)
-    d.text((W - M - d.textlength(tag, font=tf), M + 2 * S), tag, font=tf, fill=PINK)
+    # header: the site's mark and name, a hairline under it like the site header's border
+    draw_logo(d, M, 38 * S, 40 * S, c["text"], c["bg"])
+    d.text((M + 54 * S, 58 * S), "Canton Venues", font=_font("Bold", 30 * S), fill=c["text"], anchor="lm")
+    live = "Live data"
+    lf = _font("SemiBold", 20 * S)
+    lw = d.textlength(live, font=lf)
+    x1 = W - M
+    x0 = x1 - lw - 50 * S
+    d.rounded_rectangle((x0, 40 * S, x1, 76 * S), radius=8 * S, fill=_mix(_hex(UP), c["bg"], 0.12))
+    d.ellipse((x0 + 16 * S, 53 * S, x0 + 26 * S, 63 * S), fill=_hex(UP))
+    d.text((x0 + 34 * S, 58 * S), live, font=lf, fill=_mix(_hex(UP), (0, 0, 0), 0.8) if theme == "light"
+           else _hex(UP), anchor="lm")
+    d.line((0, 104 * S, W, 104 * S), fill=c["line2"], width=S)
 
-    # title and subtitle
-    big = _font("Bold", 74 * S)
-    one = d.textlength(head["title"], font=big) <= W - 2 * M
-    title_font = big if one else _font("Bold", 62 * S)
-    lines = _wrap(d, head["title"], title_font, W - 2 * M, 2)
-    step = (86 if one else 72) * S
-    block = len(lines) * step + 50 * S
-    y = 118 * S + max(0, (250 * S - block) // 2)
+    # the venue, the lead as the headline, its numbers under it
+    width = W - 2 * M
+    title = head["title"]
+    # one line while it fits at 56px or more, else two even lines; never an orphaned last word
+    tfont, lines = None, None
+    for size in (64, 60, 56):
+        if d.textlength(title, font=_font("Bold", size * S)) <= width:
+            tfont, lines = _font("Bold", size * S), [title]
+            break
+    if not lines:
+        for size in (58, 54, 50, 46):
+            tfont = _font("Bold", size * S)
+            lines = _balanced(d, title, tfont, width)
+            if lines:
+                break
+        if not lines:
+            lines = _wrap(d, title, tfont, width, 2)
+    step = round(tfont.size * 1.12)
+    sub_font = _fit(d, head["sub"], "Regular", 28 * S, width, 20 * S)
+    block = 40 * S + 18 * S + len(lines) * step + 12 * S + 36 * S
+    y = 104 * S + max(26 * S, (284 * S - block) // 2)
+
+    nf = _font("SemiBold", 30 * S)
+    d.text((M, y + 20 * S), f["name"], font=nf, fill=c["text"], anchor="lm")
+    kx = M + d.textlength(f["name"], font=nf) + 16 * S
+    kf = _font("SemiBold", 19 * S)
+    kind = f["kind"]
+    d.rounded_rectangle((kx, y + 3 * S, kx + d.textlength(kind, font=kf) + 24 * S, y + 37 * S), radius=8 * S,
+                        fill=c["line"])
+    d.text((kx + 12 * S, y + 20 * S), kind, font=kf, fill=c["text2"], anchor="lm")
+    y += 40 * S + 18 * S
     for line in lines:
-        d.text((M, y), line, font=title_font, fill=(255, 255, 255))
+        d.text((M, y), line, font=tfont, fill=c["text"], anchor="lt")
         y += step
-    sub_font = _fit(d, head["sub"], "Regular", 30 * S, W - 2 * M, 22 * S)
-    d.text((M, y + 4 * S), head["sub"], font=sub_font, fill=SUB)
+    d.text((M, y + 12 * S), head["sub"], font=sub_font, fill=c["text2"], anchor="lt")
 
-    # glass panels with a pink-to-cyan edge
+    # stat tiles: the dashboard's .stat (hairline border, card fill, grey label over a bold value)
     panels = stats(f)
     if panels:
-        gap, top, ph = 20 * S, 388 * S, 148 * S
-        pw = (W - 2 * M - gap * (len(panels) - 1)) // len(panels)
-        edge = Image.new("RGB", (2, 1))
-        edge.putdata([PINK, CYAN])
-        for n, p in enumerate(panels):
-            x0 = M + n * (pw + gap)
-            box = (x0, top, x0 + pw, top + ph)
-            glass = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            ImageDraw.Draw(glass).rounded_rectangle(box, radius=18 * S, fill=(255, 255, 255, 22))
-            img = Image.alpha_composite(img, glass)
-            mask = Image.new("L", (pw, ph), 0)
-            ImageDraw.Draw(mask).rounded_rectangle((0, 0, pw - 1, ph - 1), radius=18 * S, outline=255,
-                                                  width=2 * S)
-            img.paste(edge.resize((pw, ph), Image.BILINEAR), (x0, top), mask)
+        gap, top, ph = 16 * S, 392 * S, 118 * S
+        pw = (width - gap * (len(panels) - 1)) // len(panels)
+        boxes = [(M + n * (pw + gap), top, M + n * (pw + gap) + pw, top + ph) for n in range(len(panels))]
+        if c["shadow"]:  # the site's --shadow: 0 1px 2px and 0 4px 24px of #58667e
+            for dy, blur, alpha in ((1, 2, 31), (4, 24, 20)):
+                m = Image.new("L", (W, H), 0)
+                md = ImageDraw.Draw(m)
+                for b in boxes:
+                    md.rounded_rectangle((b[0], b[1] + dy * S, b[2], b[3] + dy * S), radius=16 * S, fill=alpha)
+                m = m.filter(ImageFilter.GaussianBlur(blur * S / 2))
+                img = Image.composite(Image.new("RGB", (W, H), (88, 102, 126)), img, m)
             d = ImageDraw.Draw(img)
-            pad = 22 * S
+        pad = 22 * S
+        for p, b in zip(panels, boxes):
+            d.rounded_rectangle(b, radius=16 * S, fill=c["bg"], outline=c["line2"], width=2 * S)
             inner = pw - 2 * pad
-            d.text((x0 + pad, top + 20 * S), p["k"], font=_fit(d, p["k"], "SemiBold", 20 * S, inner, 14 * S),
-                   fill=PINK)
-            d.text((x0 + pad, top + 52 * S), p["v"], font=_fit(d, p["v"], "Bold", 44 * S, inner, 26 * S),
-                   fill=(255, 255, 255))
-            d.text((x0 + pad, top + 108 * S), p["n"], font=_fit(d, p["n"], "Regular", 18 * S, inner, 13 * S),
-                   fill=GREY)
+            d.text((b[0] + pad, top + 18 * S), p["k"], font=_fit(d, p["k"], "Regular", 21 * S, inner, 15 * S),
+                   fill=c["text2"], anchor="lt")
+            d.text((b[0] + pad, top + 46 * S), p["v"], font=_fit(d, p["v"], "Bold", 42 * S, inner, 26 * S),
+                   fill=c["text"], anchor="lt")
+            first = p["n"].startswith("#1 ")
+            d.text((b[0] + pad, top + 96 * S), p["n"],
+                   font=_fit(d, p["n"], "SemiBold" if first else "Regular", 18 * S, inner, 13 * S),
+                   fill=_hex(UP) if first else c["text2"], anchor="lt")
 
-    foot = f"Data: cantonvenues.com, {stamp(t)}. {METHOD.get(head['rule'], '')}".strip()
-    d = ImageDraw.Draw(img)
-    d.text((M, H - M - 10 * S), foot, font=_fit(d, foot, "Regular", 19 * S, W - 2 * M, 14 * S), fill=GREY)
+    # the source strip: where this came from, when, and how the headline was measured
+    st = 538 * S
+    d.rectangle((0, st, W, H), fill=c["strip"])
+    sf = _font("SemiBold", 24 * S)
+    y0 = st + 30 * S
+    x = M
+    for part, col in (("Source: ", c["strip_text"]), ("cantonvenues.com", c["strip_accent"]),
+                      (" · live Canton DEX data", c["strip_text"])):
+        d.text((x, y0), part, font=sf, fill=col, anchor="lm")
+        x += d.textlength(part, font=sf)
+    when = stamp(t)
+    wf = _font("Regular", 20 * S)
+    d.text((W - M, y0), when, font=wf, fill=c["strip_2"], anchor="rm")
+    note = METHOD.get(head["rule"], "")
+    if note:
+        d.text((M, st + 66 * S), note, font=_fit(d, note, "Regular", 18 * S, width, 13 * S), fill=c["strip_2"],
+               anchor="lm")
 
-    out = img.convert("RGB").resize((1200, 630), Image.LANCZOS)
+    out = img.resize((1200, 630), Image.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     out.save(tmp, "PNG", optimize=True)
@@ -620,7 +691,7 @@ PAGE_CSS = """
 .vlead b { color: var(--text); }
 .vleads { display: inline-block; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--accent); background: var(--bg-2); color: var(--text); font-weight: 600; }
 .vtop { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.vcard { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; border-radius: 16px; border: 1px solid var(--line); background: #0a1230; }
+.vcard { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; border-radius: 16px; border: 1px solid var(--line-2); background: var(--bg); box-shadow: var(--shadow); }
 .acts { display: grid; gap: 10px; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; padding: 11px 16px; font-weight: 600; font-size: 14px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); }
 .btn:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
@@ -632,7 +703,7 @@ PAGE_CSS = """
 .vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
 .vtile { display: block; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--card); box-shadow: var(--shadow); color: var(--text); }
 .vtile:hover { text-decoration: none; border-color: var(--accent); }
-.vtile img { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; background: #0a1230; }
+.vtile img { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; background: var(--bg); border-bottom: 1px solid var(--line); }
 .vtile div { padding: 12px 16px 14px; }
 .vtile b { font-size: 16px; }
 .vtile p { margin: 2px 0 0; color: var(--text-2); font-size: 13px; }

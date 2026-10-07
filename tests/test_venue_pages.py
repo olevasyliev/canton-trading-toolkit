@@ -223,3 +223,26 @@ def test_an_unreachable_venue_keeps_its_last_page(tmp_path):
     next(v for v in d["venues"]["venues"] if v["id"] == "ekiden")["status"] = "down"
     heads = vp.build(tmp_path, d, T + 300, cards=False)
     assert "ekiden" not in heads and (tmp_path / "venues" / "ekiden" / "index.html").exists()
+
+
+def test_card_colours_are_the_dashboards_own():
+    css = (Path(vp.HERE) / "site" / "index.html").read_text()
+    for theme, block in (("light", css.split(':root[data-theme="dark"]')[0]),
+                         ("dark", css.split(':root[data-theme="dark"]')[1].split("}")[0])):
+        for key, var in (("bg", "--bg"), ("bg2", "--bg-2"), ("line", "--line"), ("line2", "--line-2"),
+                         ("text", "--text"), ("text2", "--text-2"), ("accent", "--accent")):
+            assert f"{var}: {vp.THEMES[theme][key]};" in block, (theme, var)
+    assert f"--up: {vp.UP};" in css and f"--down: {vp.DOWN};" in css
+
+
+def test_a_long_headline_splits_into_two_even_lines():
+    ImageDraw = pytest.importorskip("PIL.ImageDraw")
+    Image = pytest.importorskip("PIL.Image")
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    font = vp._font("Bold", 58)
+    title = "Best price to sell HANDL for CC at $10K"
+    lines = vp._balanced(d, title, font, 1088)
+    assert lines and " ".join(lines) == title and len(lines) == 2
+    widths = [d.textlength(x, font=font) for x in lines]
+    assert max(widths) <= 1088 and min(widths) > 0.6 * max(widths)  # no orphaned last word
+    assert vp._balanced(d, "word " * 80, font, 1088) is None
