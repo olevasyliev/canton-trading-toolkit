@@ -42,8 +42,8 @@ def card_figures(f: dict, head: dict, tiles: list[dict]) -> dict[str, float]:
     if "depth" in shown and f.get("deepest"):
         out["depth"] = f["deepest"].get("usd")
     # the headline's own figure, keyed by its rule: a lead that changes rule is not a jump. A best-price
-    # edge moves by multiples in normal trading, so it is not watched.
-    if isinstance(head.get("value"), (int, float)) and head.get("rule") != "best_quote":
+    # edge, or a count of trades priced best, moves by multiples in normal trading, so it is not watched.
+    if isinstance(head.get("value"), (int, float)) and head.get("rule") not in ("best_quote", "best_count"):
         out[f"headline:{head['rule']}"] = head["value"]
     return {k: (float(v) if v is not None else None) for k, v in out.items()}
 
