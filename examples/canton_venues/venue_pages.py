@@ -47,8 +47,11 @@ VENUES = [
      "x": "cantex_io", "x_source": "https://www.cantex.io"},
     {"slug": "rocky", "name": "Rocky", "rows": ["rocky", "rocky_perp"], "site": "https://rocky.exchange",
      "x": "Rocky_exchange", "x_source": "https://rocky.exchange"},
+    # "lead": False draws the plain card (name, pools, tokens, volume) even when the venue leads a
+    # ranking; its leads are still computed and logged. Tradecraft: founder decision pending, plain
+    # by default (2026-10-07); set True to put its lead (the deepest CC/USDCx pool) back on the card.
     {"slug": "tradecraft", "name": "Tradecraft", "rows": ["tradecraft"], "site": "https://tradecraft.fi",
-     "x": "TradecraftFi", "x_source": "https://tradecraft.fi"},
+     "x": "TradecraftFi", "x_source": "https://tradecraft.fi", "lead": False},
     {"slug": "ekiden", "name": "Ekiden", "rows": ["ekiden"], "site": "https://ekiden.fi",
      "x": "ekidenfi", "x_source": "https://ekiden.fi"},
     # neither site nor docs link an X account: the share text names the venue without a tag
@@ -385,8 +388,7 @@ def facts(data: dict) -> dict[str, dict]:
                                               swaps.get(best, 1), swaps.get(second, 1), cc_usd)})
 
     # what each venue can lead, measured the same way for everyone
-    tok_count = {v: sum(1 for x in xs if (x.get("liquidity_usd") or 0) >= MIN_LIQUIDITY_USD)
-                 for v, xs in tok_rows.items()}
+    tok_count = {v: len(token_split(xs)[0]) for v, xs in tok_rows.items()}
     pool_count: dict[str, int] = {}
     for p in [*pools, *unpriced]:
         if p["tvl_usd"] >= MIN_LIQUIDITY_USD:
@@ -523,6 +525,21 @@ def _direction(row: dict) -> str:
     return f"buy {sym} with CC" if row["side"] == "sell" else f"sell {sym} for CC"
 
 
+def received(row: dict) -> str:
+    """What the trader gets back on one quote: the token on a buy, CC or dollars on a sell."""
+    sym = row["symbol"]
+    if row["kind"] == "usd":
+        return sym if row["side"] == "buy" else "dollars"
+    return sym if row["side"] == "sell" else "CC"
+
+
+def best_quote_sub(row: dict) -> str:
+    """"0.87% more HANDL than the next venue we read, ...": the edge is in what you receive, so it
+    can never read as a higher price."""
+    return (f"{row['edge_bps'] / 100:.2f}% more {received(row)} than the next venue we read, pool fees and "
+            "price impact included, network fees excluded")
+
+
 def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tvl, tok_count, pool_count,
            live_mkts, tokens, pools) -> list[dict]:
     """Every ranking this venue is #1 at by ``LEAD_MARGIN`` or more, in the order the headline picks from.
@@ -606,10 +623,35 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
     if clear:
         w = max(clear, key=lambda x: (x["size"], x["net_edge_bps"]))
         add("best_quote", f"Best price to {_direction(w)} at {SIZE_LABEL.get(w['size'], money(w['size']))}",
-            f"{w['edge_bps'] / 100:.2f}% more than the next venue we read, pool fees and price impact "
-            "included, network fees excluded",
+            best_quote_sub(w),
             (w["next"], w["net_edge_bps"], w["net_edge_bps"] / 10_000), w["edge_bps"], fmt=lambda b: "")
     return out
+
+
+def token_liquidity(x: dict) -> float | None:
+    """One token's liquidity on one venue, as the $1K rule reads it: a pool's liquidity, or a
+    book's dollars within 1% of mid. None when the data has none."""
+    return x.get("depth_1pct_usd") if x.get("market") else x.get("liquidity_usd")
+
+
+def token_split(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """A venue's token rows split by the $1K rule on THAT venue: (counted, thin). Liquidity the
+    token has elsewhere never counts here; an unmeasured market is not claimed as $1K+."""
+    ok = [x for x in rows if (token_liquidity(x) or 0) >= MIN_LIQUIDITY_USD]
+    return ok, [x for x in rows if (token_liquidity(x) or 0) < MIN_LIQUIDITY_USD]
+
+
+def token_facts(f: dict) -> dict:
+    """The one source for every token figure a card or page shows: the count, the names (non-
+    stablecoins first) and the footer sentence, all from ``token_split`` on this venue."""
+    ok, thin = token_split(f.get("tokens") or [])
+    ok = [x for x in ok if not _stable(x)] + [x for x in ok if _stable(x)]
+    names = [x["symbol"] for x in ok]
+    floor = money(MIN_LIQUIDITY_USD)
+    what = "within 1% of mid" if any(x.get("market") for x in f.get("tokens") or []) else "of liquidity"
+    return {"n": len(names), "names": names, "rows": ok, "thin": thin, "what": what,
+            "label": f"{len(names)} with {floor}+ here",
+            "note": f"Tokens: the {len(names)} with {floor} or more {what} on {f['name']} itself."}
 
 
 def pools_text(f: dict) -> str:
@@ -619,8 +661,9 @@ def pools_text(f: dict) -> str:
 
 
 def headline(f: dict) -> dict:
-    """The card's title and subtitle: the venue's first lead, or a plain count when it has none."""
-    if f.get("leads"):
+    """The card's title and subtitle: the venue's first lead, or a plain count when it has none or
+    its ``VENUES`` row sets ``"lead": False``."""
+    if f.get("leads") and f["venue"].get("lead", True):
         return f["leads"][0]
     if f.get("pools"):
         n, priced = f["pool_n"], f["pool_priced"]
@@ -629,7 +672,8 @@ def headline(f: dict) -> dict:
                 "sub": f"{n} CC pools, {short_money(f['tvl'])} in liquidity{tail}", "value": f["tvl"]}
     if f.get("tokens"):
         return {"rule": "read", "title": f"{f['name']}, priced live on Canton",
-                "sub": f"{len(f['tokens'])} tokens priced live", "value": None}
+                "sub": f"{token_facts(f)['n']} tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity",
+                "value": None}
     return {"rule": "read", "title": f"{f['name']}, read live", "sub": f["kind"], "value": None}
 
 
@@ -683,16 +727,15 @@ def token_tile(f: dict) -> dict:
     """What we price there, by name, the largest non-stablecoin tokens first. When the venue
     publishes its own market list and we price only part of it, the tile names what is left out
     ("CC/USDCx excluded")."""
-    toks = [x for x in f["tokens"] if not _stable(x)] + [x for x in f["tokens"] if _stable(x)]
-    names = [x["symbol"] for x in toks]
+    tf = token_facts(f)
+    names = tf["names"]
     listed = f.get("listed") or []
     if listed and set(listed) - set(names):
         n = len(set(names) & set(listed))
         left = [p for p in f.get("listed_pairs") or listed if p.partition("/")[0] not in names]
         return {"k": "Markets we price", "v": names_text(names), "names": names, "m": "tokens",
                 "n": f"{n} of {len(listed)}, {', '.join(left)} excluded"}
-    return {"k": "Tokens priced", "v": names_text(names), "names": names, "m": "tokens",
-            "n": f"{len(names)} priced live"}
+    return {"k": "Tokens priced", "v": names_text(names), "names": names, "m": "tokens", "n": tf["label"]}
 
 
 def perp_tile(f: dict) -> dict:
@@ -736,7 +779,7 @@ def stats(f: dict) -> list[dict]:
         out.append({"k": "Open interest", "v": short_money(f["open_interest"]), "n": "all markets", "m": "oi"})
     if f.get("perp_markets") and len(out) < 4:
         out.append(perp_tile(f))
-    if f.get("tokens") and len(out) < 4:
+    if token_facts(f)["n"] and len(out) < 4:
         out.append(token_tile(f))
     if f.get("pools") and len(out) < 4:
         p = f["pools"][0]
@@ -773,6 +816,8 @@ def metric_note(m: str, f: dict) -> str:
     """What one kind of card figure is, in a sentence: the footer names every kind the card shows."""
     if m == "spot_volume":
         return volume_method(f["id"], f["name"], f.get("cc_usd"))
+    if m == "tokens":
+        return token_facts(f)["note"]
     if m == "perp_volume":
         quotes = ", ".join(sorted({x["quote"] for x in f.get("perp_markets") or []})) or "the quote token"
         return f"Perps volume: 24h turnover in {quotes}, counted at $1."
@@ -782,7 +827,6 @@ def metric_note(m: str, f: dict) -> str:
         "depth": "Depth: dollars resting within 1% of mid, from the venue's public book.",
         "oi": "Open interest: open contracts at mark price.",
         "perp_markets": "Perp markets trading: $1K or more in 24h.",
-        "tokens": "Tokens: $1K or more of liquidity, matched by Canton instrument.",
         "fee": "Pool fee: per swap, before network fees.",
     }.get(m, "")
 
@@ -1228,11 +1272,12 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         st.append(("In pools", money(f["tvl"])))
         st.append(("CC pools", f"{f['pool_n']}, {f['pool_priced']} priced" if f["pool_priced"] < f["pool_n"]
                    else str(f["pool_n"])))
+    tf = token_facts(f)
     if f.get("tokens"):
         listed = f.get("listed") or []
-        ours = [x for x in f["tokens"] if x["symbol"] in listed]
+        ours = [x for x in tf["names"] if x in listed]
         st.append(("Markets we price", f"{len(ours)} of {len(listed)}") if len(ours) < len(listed)
-                  else ("Tokens priced", str(len(f["tokens"]))))
+                  else (f"Tokens with {money(MIN_LIQUIDITY_USD)}+ here", str(tf["n"])))
     if f.get("deepest") and not f.get("pools") and not f.get("keyed"):
         st.append((f"{market_pair(f['deepest']['symbol'], f['deepest']['market'])} within 1% of mid",
                    money(f["deepest"]["usd"])))
@@ -1273,22 +1318,33 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         hdr = [("Token", "l"), ("Price here", ""), ("Liquidity", ""), ("Within 1% of mid", "")]
         if ob:
             hdr = [("Token", "l"), ("Market", "l"), ("Price here", ""), ("Within 1% of mid", ""), ("Spread", "")]
-        rows = []
-        for x in f["tokens"][:25]:
-            link = f'<a href="/#t/{quote(x["key"])}"><b>{e(x["symbol"])}</b></a>'
-            if ob:
-                rows.append([link, f'<span class="muted">{e(x.get("market") or "")}</span>', price(x.get("price_usd")),
-                             money(x.get("depth_1pct_usd")),
-                             NA if x.get("spread_bps") is None else f"{x['spread_bps']:.2f} bp"])
-            else:
-                rows.append([link, price(x.get("price_usd")), money(x.get("liquidity_usd")),
-                             money(x.get("depth_1pct_usd"))])
+        def token_rows(xs):
+            rows = []
+            for x in sorted(xs, key=lambda x: -(token_liquidity(x) or 0))[:25]:
+                link = f'<a href="/#t/{quote(x["key"])}"><b>{e(x["symbol"])}</b></a>'
+                if ob:
+                    rows.append([link, f'<span class="muted">{e(x.get("market") or "")}</span>',
+                                 price(x.get("price_usd")), money(x.get("depth_1pct_usd")),
+                                 NA if x.get("spread_bps") is None else f"{x['spread_bps']:.2f} bp"])
+                else:
+                    rows.append([link, price(x.get("price_usd")), money(x.get("liquidity_usd")),
+                                 money(x.get("depth_1pct_usd"))])
+            return rows
+
+        floor = e(money(MIN_LIQUIDITY_USD))
+        what = tf["what"]
         keyed_note = (f" Prices, depth and spread here are from {e(f['name'])}'s order book via our account key, "
                       "so they cannot be checked without one." if f.get("keyed") else "")
+        tables = (f'<div class="panel">{_table(hdr, token_rows(tf["rows"]))}</div>' if tf["rows"]
+                  else f'<p class="sub">No token has {floor} or more {what} on {e(f["name"])} right now.</p>')
+        if tf["thin"]:
+            tables += (f'\n    <p class="sub" style="margin:14px 0 6px">Thin, under {floor} {what} on {e(f["name"])}: '
+                       "priced, but not counted in the token figures above or on the card.</p>\n"
+                       f'    <div class="panel">{_table(hdr, token_rows(tf["thin"]))}</div>')
         parts.append(f"""  <section class="block">
     <h2>Tokens</h2>
-    <p class="sub">Every token we price on {e(f['name'])}, largest first. Click one for every venue's price.{keyed_note}</p>
-    <div class="panel">{_table(hdr, rows)}</div>
+    <p class="sub">The {tf['n']} token{'' if tf['n'] == 1 else 's'} with {floor} or more {what} on {e(f['name'])} itself, largest first. Click one for every venue's price.{keyed_note}</p>
+    {tables}
   </section>""")
 
     if f.get("pools"):

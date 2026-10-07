@@ -98,8 +98,11 @@ def test_headline_is_the_first_thing_a_venue_leads():
     assert h["rocky"]["rule"] == "perp_volume"
     # derivatives coverage is not confirmed by any outside list: scoped to what we read
     assert h["rocky"]["title"] == "The largest perps venue among the Canton venues we read"
-    # Tradecraft wins both $50K CC-pair quotes, but its headline is its pool liquidity
-    assert h["tradecraft"]["rule"] == "tvl" and h["tradecraft"]["next"] == "Cantex"
+    # Tradecraft wins both $50K CC-pair quotes, but its first lead is its pool liquidity; its card
+    # stays plain by default ("lead": False), so the lead is kept but not drawn
+    tc = f["tradecraft"]["leads"][0]
+    assert tc["rule"] == "tvl" and tc["next"] == "Cantex"
+    assert h["tradecraft"]["rule"] == "pools"
     assert h["ekiden"]["rule"] == "perp_markets" and "3 markets trading: BTC, ETH, CC" in h["ekiden"]["sub"]
     # leads nothing: a plain count, never a superlative
     assert h["oneswap"]["rule"] == "pools" and "most" not in h["oneswap"]["title"].lower()
@@ -417,9 +420,9 @@ def test_a_lead_needs_a_clear_margin_over_the_runner_up():
     assert all(x["rule"] != "tvl" for x in f["leads"])
     assert {"rule": "tvl", "next": "Cantex"} == {k: f["near"][0][k] for k in ("rule", "next")}
     # it falls to the next category the rule finds: its USDCx pool, 50% deeper than Cantex's
-    assert vp.headline(f)["rule"] == "token_depth" and vp.headline(f)["margin"] == pytest.approx(0.5)
+    assert f["leads"][0]["rule"] == "token_depth" and f["leads"][0]["margin"] == pytest.approx(0.5)
     lp[1]["tvl_usd"] = lp[0]["tvl_usd"] / (1 + vp.LEAD_MARGIN)  # exactly at the margin: a lead
-    assert vp.headline(vp.facts(d)["tradecraft"])["rule"] == "tvl"
+    assert vp.facts(d)["tradecraft"]["leads"][0]["rule"] == "tvl"
     assert vp._lead({"a": 109, "b": 100}, "a") is None and vp._lead({"a": 111, "b": 100}, "a")[0] == "b"
 
 
@@ -477,8 +480,8 @@ def test_one_money_style_and_tokens_lead_with_non_stablecoins():
     assert [vp.short_money(x) for x in (60_100, 2_636, 84_000, 1_200_000, 490_000, 512, 2.65, 999_960)] == [
         "$60.1K", "$2.6K", "$84K", "$1.2M", "$490K", "$512", "$2.65", "$1M"]
     assert vp.money(34_115_904) == vp.short_money(34_115_904) == "$34.1M"
-    f = {"name": "X", "tokens": [{"symbol": "USDC.B", "key": "USDC.B"}, {"symbol": "USDCx", "key": "USDCX"},
-                                 {"symbol": "EDELx", "key": "EDELX"}, {"symbol": "eXAU", "key": "EXAU"}]}
+    f = {"name": "X", "tokens": [{"symbol": s, "key": k, "liquidity_usd": 5_000} for s, k in (
+        ("USDC.B", "USDC.B"), ("USDCx", "USDCX"), ("EDELx", "EDELX"), ("eXAU", "EXAU"))]}
     assert vp.token_tile(f)["names"] == ["EDELx", "eXAU", "USDC.B", "USDCx"]
 
 
@@ -488,3 +491,71 @@ def test_card_footer_names_every_kind_of_figure_on_the_card():
         note = vp.card_notes(f, head)
         for p in vp.stats(f):
             assert vp.metric_note(p["m"], f) in note, (slug, p["m"])
+
+
+# === second verifier pass (2026-10-07) ======================================
+
+def test_token_count_names_and_footer_apply_the_1k_rule_on_this_venue():
+    d = data()
+    # HANDL has $500K on Cantex but $300 on Tradecraft: it counts for Cantex only
+    d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
+        "cantex": {"price_usd": 0.1, "liquidity_usd": 500_000, "depth_1pct_usd": 2_500},
+        "tradecraft": {"price_usd": 0.1, "liquidity_usd": 300, "depth_1pct_usd": 2}}})
+    f = vp.facts(d)
+    tc, cx = vp.token_facts(f["tradecraft"]), vp.token_facts(f["cantex"])
+    assert (tc["n"], tc["names"], [x["symbol"] for x in tc["thin"]]) == (1, ["USDCx"], ["HANDL"])
+    assert (cx["n"], cx["names"]) == (2, ["HANDL", "USDCx"])
+    for slug, t in (("tradecraft", tc), ("cantex", cx)):
+        tile = vp.token_tile(f[slug])
+        assert tile["names"] == t["names"] and tile["n"] == f"{t['n']} with $1K+ here"
+        note = vp.card_notes(f[slug], vp.headline(f[slug]))
+        assert f"Tokens: the {t['n']} with $1K or more of liquidity on {f[slug]['name']} itself" in note
+    # an order book is held to its depth within 1% of mid, not its total liquidity
+    rows = [{"symbol": "A", "key": "A", "market": "A/USDCx", "liquidity_usd": 9_000, "depth_1pct_usd": 400},
+            {"symbol": "B", "key": "B", "market": "B/USDCx", "liquidity_usd": 9_000, "depth_1pct_usd": 4_000},
+            {"symbol": "C", "key": "C", "liquidity_usd": None}]
+    ok, thin = vp.token_split(rows)
+    assert [x["symbol"] for x in ok] == ["B"] and [x["symbol"] for x in thin] == ["A", "C"]
+
+
+def test_page_lists_thin_tokens_apart_and_counts_only_the_rest(tmp_path):
+    pytest.importorskip("PIL")
+    d = data()
+    d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
+        "tradecraft": {"price_usd": 0.1, "liquidity_usd": 300, "depth_1pct_usd": 2},
+        "cantex": {"price_usd": 0.1, "liquidity_usd": 500_000, "depth_1pct_usd": 2_500}}})
+    vp.build(tmp_path, d, T)
+    page = (tmp_path / "venues" / "tradecraft" / "index.html").read_text()
+    head, _, thin = page.partition("Thin, under $1K of liquidity on Tradecraft")
+    assert thin and "HANDL" in thin and "HANDL" not in head.split("<h2>Tokens</h2>")[1]
+    assert "The 1 token with $1K or more of liquidity on Tradecraft itself" in page
+    assert "Thin, under" not in (tmp_path / "venues" / "cantex" / "index.html").read_text()
+
+
+def test_best_price_sub_names_what_you_receive():
+    row = {"symbol": "HANDL", "kind": "cc", "side": "sell", "edge_bps": 87.0}
+    assert vp.best_quote_sub(row) == ("0.87% more HANDL than the next venue we read, pool fees and price "
+                                      "impact included, network fees excluded")
+    assert vp.best_quote_sub({**row, "side": "buy"}).startswith("0.87% more CC than the next venue")
+    assert vp.best_quote_sub({**row, "kind": "usd", "side": "sell"}).startswith("0.87% more dollars ")
+    d = data()
+    d["execution"]["pairs"].append({"key": "HANDL", "kind": "cc", "symbol": "HANDL", "venues": ["cantex", "oneswap"],
+                                    "rows": [_row("sell", 1000, {"oneswap": 1.0087, "cantex": 1.0}, "oneswap")]})
+    d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
+        "cantex": {"liquidity_usd": 50_000}, "oneswap": {"liquidity_usd": 100_000}}})
+    lead = next(x for x in vp.facts(d)["oneswap"]["leads"] if x["rule"] == "best_quote")
+    assert lead["sub"].startswith("0.87% more HANDL than the next venue we read")
+
+
+def test_tradecraft_card_is_plain_unless_its_lead_is_switched_on():
+    tc = next(v for v in vp.VENUES if v["slug"] == "tradecraft")
+    assert tc["lead"] is False
+    f = vp.facts(data())["tradecraft"]
+    h = vp.headline(f)
+    assert h["rule"] == "pools" and h["title"] == "Tradecraft, priced live on Canton"
+    assert vp.lead_line(f, h) is None and "most" not in vp.share_text(f, h).lower()
+    tiles = [p["k"] for p in vp.stats(f)]
+    assert not any("1% of mid" in k for k in tiles) and "Largest pool" in tiles
+    assert "Within 1% of mid" not in vp.card_notes(f, h) and "Depth:" not in vp.card_notes(f, h)
+    # the override restores the lead
+    assert vp.headline({**f, "venue": {**f["venue"], "lead": True}})["rule"] == f["leads"][0]["rule"]
