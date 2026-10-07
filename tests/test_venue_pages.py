@@ -36,11 +36,11 @@ def data():
         _venue("oneswap", "OneSwap", "Spot AMM", None),
         _venue("silvana", "Silvana", "Private order book", None, status="closed"),
     ]
-    both = {"cantex": 1.0, "tradecraft": 1.1}
+    small, big = {"cantex": 1.01, "tradecraft": 1.0}, {"cantex": 1.0, "tradecraft": 1.1}
     pairs = [
         {"key": "USDCX", "kind": "cc", "symbol": "USDCx", "venues": ["cantex", "tradecraft"], "rows": [
-            _row("sell", 100, both, "cantex"), _row("buy", 100, both, "cantex"),
-            _row("sell", 50_000, both, "tradecraft"), _row("buy", 50_000, both, "tradecraft")]},
+            _row("sell", 100, dict(small), "cantex"), _row("buy", 100, dict(small), "cantex"),
+            _row("sell", 50_000, dict(big), "tradecraft"), _row("buy", 50_000, dict(big), "tradecraft")]},
         {"key": "CBTC:USD", "kind": "usd", "token": "CBTC", "symbol": "CBTC",
          "venues": ["cantex", "temple", "rocky"], "rows": [
              _row("buy", 10_000, {"cantex": 1, "temple": 2, "rocky": 1.5}, "temple"),
@@ -84,25 +84,69 @@ def test_every_live_venue_gets_a_page_and_closed_ones_do_not():
     assert f["rocky"]["perp_volume"] == 4_600_000
 
 
-def test_headline_takes_the_first_ranking_a_venue_leads():
+def test_headline_is_the_first_thing_a_venue_leads():
     f = vp.facts(data())
     h = {s: vp.headline(x) for s, x in f.items()}
     assert h["temple"]["rule"] == "spot_volume" and "$34.0M" in h["temple"]["sub"]
+    assert h["temple"]["next"] == "Cantex"  # runner-up by spot volume
     assert h["cantex"]["rule"] == "kind_volume" and h["cantex"]["title"] == "The largest AMM on Canton by volume"
     assert h["rocky"]["rule"] == "perp_volume"
-    # Tradecraft leads no volume ranking; it wins both $50K CC-pair quotes
-    assert h["tradecraft"]["rule"] == "exec_cc"
-    assert h["tradecraft"]["title"] == "Best execution at $50K"
-    assert "2 of 2 CC-pair quotes" in h["tradecraft"]["sub"]
-    assert h["ekiden"]["rule"] == "perp_markets" and "3 markets: BTC, ETH, CC" in h["ekiden"]["sub"]
+    # Tradecraft wins both $50K CC-pair quotes, but its headline is its pool liquidity
+    assert h["tradecraft"]["rule"] == "tvl" and h["tradecraft"]["next"] == "Cantex"
+    assert h["ekiden"]["rule"] == "perp_markets" and "3 markets trading: BTC, ETH, CC" in h["ekiden"]["sub"]
     # leads nothing: a plain count, never a superlative
     assert h["oneswap"]["rule"] == "pools" and "most" not in h["oneswap"]["title"].lower()
+    assert vp.lead_line(f["oneswap"], h["oneswap"]) is None
 
 
-def test_a_tie_or_a_minority_of_quotes_is_not_a_lead():
+def test_no_headline_or_card_tile_ranks_venues_on_price_across_sizes():
     d = data()
-    d["execution"]["pairs"][0]["rows"][3]["best"] = "cantex"  # $50K: one each
-    assert vp.facts(d)["tradecraft"]["exec_lead"] == []
+    for v in d["venues"]["venues"]:  # nobody leads a volume, pool or count ranking any more
+        v["volume_24h_usd"] = None
+    d["lp"]["pools"], d["perps"]["markets"], d["tokens"]["tokens"] = [], [], []
+    for f in vp.facts(d).values():
+        h = vp.headline(f)
+        assert "best execution" not in h["title"].lower() and " from $" not in h["title"]
+        assert not any(p["k"].startswith("Best price") for p in vp.stats(f))
+    # a single quote won clearly is still a fact, named by direction and size
+    lead = vp.facts(d)["tradecraft"]["leads"][0]
+    assert lead["rule"] == "best_quote" and lead["title"] == "Best price to buy USDCx with CC at $50K"
+
+
+def test_a_thin_pool_is_not_a_competitor():
+    d = data()
+    rows = d["execution"]["pairs"][0]["rows"]
+    for r in rows:  # Pool Party joins the CC/USDCx quotes and wins the $100 ones
+        r["out"]["poolparty"] = 2.0
+    rows[0]["best"] = rows[1]["best"] = "poolparty"
+    usdcx = d["tokens"]["tokens"][0]["venues"]
+    usdcx["poolparty"]["liquidity_usd"] = vp.MIN_LIQUIDITY_USD + 1
+    assert vp.facts(d)["pool-party"]["exec"]["cc:100"] == {"won": 2, "of": 2}
+    usdcx["poolparty"]["liquidity_usd"] = vp.MIN_LIQUIDITY_USD - 1
+    f = vp.facts(d)
+    assert "cc:100" not in f["pool-party"]["exec"]  # neither wins nor is counted
+    assert f["cantex"]["exec"]["cc:100"] == {"won": 2, "of": 2}  # the win goes to the best real pool
+    # a quote whose only alternative is thin counts for nobody
+    usdcx["tradecraft"]["liquidity_usd"] = 500
+    f = vp.facts(d)
+    assert "cc:100" not in f["cantex"]["exec"] and "cc:100" not in f["tradecraft"]["exec"]
+
+
+def test_a_tie_never_leads():
+    d = data()
+    lp = d["lp"]["pools"]
+    lp[1]["tvl_usd"] = lp[0]["tvl_usd"]  # Cantex and Tradecraft level on pool liquidity
+    assert all(x["rule"] != "tvl" for x in vp.facts(d)["tradecraft"]["leads"])
+
+
+def test_method_lines_never_repeat():
+    lines = vp.method_lines(["Order books from Temple's API (account key); settled volume per market. Taker fee 1 bp.",
+                             "Taker fee 1 bp is Temple's published rate."])
+    assert lines == ["Order books from Temple's API (account key).", "Settled volume per market.",
+                     "Taker fee 1 bp is Temple's published rate."]
+    for f in vp.facts(data()).values():
+        assert len(f["method"]) == len(set(f["method"]))
+    assert vp.method_lines(["MainNet tickers.", "MainNet tickers."]) == ["MainNet tickers."]
 
 
 def test_card_ranks_only_the_top_half():
@@ -145,7 +189,8 @@ def test_page_carries_its_own_social_card_and_share_link(tmp_path):
     assert (p.meta["og:image:width"], p.meta["og:image:height"]) == ("1200", "630")
     intent = next(h for h in p.links if h.startswith("https://x.com/intent/post"))
     q = parse_qs(urlparse(intent).query)
-    assert q["text"][0].startswith("Temple (@temple_ny) on Canton Venues") and q["url"] == ["https://cantonvenues.com/venues/temple/"]
+    assert q["text"][0].startswith("Where Temple (@temple_ny) leads on Canton Venues: the largest spot venue")
+    assert "Where Temple leads: the largest spot venue on Canton." in page and "Next: Cantex, $4.0M." in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
     # no verified handle: the venue is named, nobody is tagged
     one = (tmp_path / "venues" / "oneswap" / "index.html").read_text()
     oq = parse_qs(urlparse(next(h for h in _links(one) if "intent/post" in h)).query)
