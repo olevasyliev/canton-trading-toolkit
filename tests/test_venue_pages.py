@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -998,9 +999,19 @@ def test_no_outside_list_is_named_in_public_copy_but_its_charts_are_credited(tmp
         assert "llama" not in head_part.lower() and "we read" not in body
         assert foot.count("DefiLlama") == (1 if slug == "temple" else 0), slug
         assert ("DefiLlama" in foot) == (vp.HISTORY_CREDIT in foot)
+        # and it is small print, never body copy
+        if "DefiLlama" in foot:
+            assert f'<p class="fine">{vp.e(vp.HISTORY_CREDIT)}</p>' in page
     idx = (tmp_path / "venues" / "index.html").read_text()
     head_part, _, foot = _main_text(idx).partition("Leads at:")
     assert "llama" not in head_part.lower() and foot.count("DefiLlama") == 1
+    # the index's "Leads at" paragraph under the table never names the source; the credit is small print
+    body = idx.split("<main", 1)[1]
+    lead_p = re.search(r'<p class="sub"[^>]*>Leads at:.*?</p>', body, re.DOTALL).group(0)
+    assert "DefiLlama" not in lead_p
+    fine = re.findall(r'<p class="fine">(.*?)</p>', body, re.DOTALL)
+    assert sum("DefiLlama" in x for x in fine) == 1
+    assert ".fine {" in idx and "font-size: 12px" in idx
 
 
 def test_a_scope_line_sits_under_an_unconfirmed_ranking_on_card_and_page(tmp_path):

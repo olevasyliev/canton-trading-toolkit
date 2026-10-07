@@ -176,7 +176,7 @@ MIN_COUNT_TRADES = 4
 # Trading on Canton but publishing no market data we can read yet: named once, at the foot of the
 # venues index, with a way to get in touch. The one place this list lives.
 COMING = ["Trade.Fast", "Swap.Monster", "Kairo", "Canborsa", "Silvana"]
-# The only public credit to DefiLlama: under the method notes of a page that draws its daily charts.
+# The only public credit to DefiLlama, always small print: under the method notes of a page that draws its daily charts, and under the /venues/ table.
 HISTORY_CREDIT = "Daily volume history from DefiLlama's Canton DEX data."
 STABLES = model.STABLES
 
@@ -1362,6 +1362,7 @@ def nav_venues(prefix: str = "/") -> str:
 
 PAGE_CSS = """
 .crumbs { margin: 20px 0 6px; font-size: 13px; color: var(--text-2); font-weight: 500; }
+.fine { color: var(--text-3); font-size: 12px; margin: 8px 0 0; max-width: 80ch; }
 .crumbs a { font-weight: 600; }
 .vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 10px; }
 .vhead h1 { font-size: 28px; margin: 0; letter-spacing: -0.01em; }
@@ -1912,7 +1913,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     small = [scope] if scope else []
     if any(s.get("source") == "defillama" for s in f.get("series") or []):
         small.append(HISTORY_CREDIT)
-    fine = "".join(f'<p class="sub" style="margin-top:8px">{e(x)}</p>' for x in small)
+    fine = "".join(f'<p class="fine">{e(x)}</p>' for x in small)
     parts.append(f"""  <section class="block">
     <h2>How we track {e(f['name'])}</h2>
     <ul class="notes">{notes}</ul>
@@ -1968,14 +1969,15 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
     n = len(all_facts)
     checked = (" A lead that says on Canton covers every Canton DEX with public market data."
                if any(heads[s].get("scope") == "canton" for s in order) else "")
-    credit = (" Daily volume history from DefiLlama's Canton DEX data, or from the venue's own record."
+    # the source credit is small print under the table, never in the paragraph's body copy
+    credit = (f'\n  <p class="fine">{e(HISTORY_CREDIT[:-1])}, or from the venue\'s own record.</p>'
               if any(x.get("source") == "defillama" for f in all_facts.values() for x in f.get("series") or [])
               else "")
     coming = ", ".join(COMING)
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
   <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton DEX with public market data, live. Sorted by 24h volume; click one for its page, its history and a card to share.</p></div>
   <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Leads at</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-  <p class="sub" style="margin-top:14px">Leads at: each venue's strongest fact, a ranking it tops by 10% or more or the trades it prices best after network fees, markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book.{e(credit)}</p>
+  <p class="sub" style="margin-top:14px">Leads at: each venue's strongest fact, a ranking it tops by 10% or more or the trades it prices best after network fees, markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book.</p>{credit}
   <section class="block">
     <h2>Coming to Canton Venues</h2>
     <p class="sub">Trading on Canton, no public market data yet: {e(coming)}. Run one of these? <a href="/#contact">Get in touch</a>.</p>
