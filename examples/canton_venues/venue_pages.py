@@ -105,12 +105,16 @@ LEAD_MARGIN = 0.10
 # both as quoted and AFTER each venue's known per-swap network fee is taken off (``NETWORK_FEE``):
 # a venue whose fee we do not know is never handed a lead by the fee we do know for another.
 CLEAR_EDGE_BPS = 10
+# A best price leads only at this trade size or larger: under it a per-swap network fee we cannot
+# see is too large a share of the trade for any edge to mean much.
+MIN_PRICE_LEAD_USD = 1_000
 # Per-swap network fees we know, as (unit, low, high). The leader is charged the high end and the
 # runner-up the low end, so a best-price lead survives the least favourable reading.
 #   oneswap  docs.oneswap.cc: "typically around $1.5-2 at recent network prices" (model.SWAP_COST_USD)
 #   cantex   measured: median of 96 authenticated quotes, 2026-10-03 (model.SWAP_COST_CC_MEASURED)
-# Venues missing here are charged nothing: we do not know their fee, and an assumed one would
-# decide leads on a guess.
+# A venue missing here never leads on price: its own fee is unknown, so no edge can be shown to
+# survive it. As a runner-up it is charged nothing (the low end of an unknown range), which only
+# makes the leader's edge harder to clear.
 NETWORK_FEE = {"oneswap": ("usd", 1.5, 2.0),
                "cantex": ("cc", float(model.SWAP_COST_CC_MEASURED["cantex"]),
                           float(model.SWAP_COST_CC_MEASURED["cantex"]))}
@@ -619,7 +623,8 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
     # one quote: a single direction and size it still wins clearly once each venue's known network
     # fee is taken off, the largest size first
     clear = [w for w in f.get("won_rows", [])
-             if w["edge_bps"] >= CLEAR_EDGE_BPS and (w.get("net_edge_bps") or 0) >= CLEAR_EDGE_BPS]
+             if i in NETWORK_FEE and w["size"] >= MIN_PRICE_LEAD_USD
+             and w["edge_bps"] >= CLEAR_EDGE_BPS and (w.get("net_edge_bps") or 0) >= CLEAR_EDGE_BPS]
     if clear:
         w = max(clear, key=lambda x: (x["size"], x["net_edge_bps"]))
         add("best_quote", f"Best price to {_direction(w)} at {SIZE_LABEL.get(w['size'], money(w['size']))}",
@@ -651,6 +656,7 @@ def token_facts(f: dict) -> dict:
     what = "within 1% of mid" if any(x.get("market") for x in f.get("tokens") or []) else "of liquidity"
     return {"n": len(names), "names": names, "rows": ok, "thin": thin, "what": what,
             "label": f"{len(names)} with {floor}+ here",
+            "short": f"Tokens: {len(names)} with {floor}+ on {f['name']}.",
             "note": f"Tokens: the {len(names)} with {floor} or more {what} on {f['name']} itself."}
 
 
@@ -804,7 +810,9 @@ METHOD = {
     "token_depth": "Dollars within 1% of mid; markets under $1K set aside.",
     "pool_tvl": "Pool liquidity from live reserves; pools under $1K set aside.",
     "best_quote": ("Best price: same amount on every venue, pool fees and price impact included, network fees "
-                   "excluded; the lead also holds after known network fees."),
+                   "excluded. A venue leads on price only at $1K or more, only when its own per-swap network "
+                   "fee is documented or measured, and only when the edge survives that fee at the top of its "
+                   "range with the runner-up charged the bottom of theirs."),
     "pools": "",
     "read": "Read from the venue's API.",
 }
@@ -812,8 +820,29 @@ METHOD = {
 METHOD_CANTON = "Ranked {what} among the venues we read and checked against DefiLlama's Canton DEX list."
 
 
+METHOD_SHORT = {"best_quote": "Best price after known network fees, $1K and up.", "pools": "", "read": ""}
+METHOD_SHORT_CANTON = "Ranked among the venues we read, checked against DefiLlama."
+RANKED_SHORT = "Ranked among the venues we read."
+
+
+def metric_short(m: str, f: dict) -> str:
+    """The card footer's few words for one kind of figure; ``metric_note`` is the page's sentence."""
+    if m == "spot_volume":
+        basis, at = VOLUME_BASIS.get(f["id"]), price(f.get("cc_usd"))
+        return {"usd": "Volume as reported.", "cc": f"Volume: CC at {at} per CC.", "cc_leg": f"Volume: CC side at {at} per CC.",
+                "quote": "Volume: quote-token turnover."}.get(basis, "Volume converted by us.")
+    if m == "tokens":
+        return token_facts(f)["short"]
+    if m == "perp_volume":
+        quotes = ", ".join(sorted({x["quote"] for x in f.get("perp_markets") or []})) or "quote-token"
+        return f"Perps: {quotes} turnover at $1."
+    return {"tvl": "Pools: 2x CC reserve.", "share": "Share of the spot volume we read.",
+            "depth": "Depth: within 1% of mid.", "oi": "Open interest at mark.",
+            "perp_markets": "Trading: $1K+ in 24h.", "fee": "Fee per swap, before network fees."}.get(m, "")
+
+
 def metric_note(m: str, f: dict) -> str:
-    """What one kind of card figure is, in a sentence: the footer names every kind the card shows."""
+    """What one kind of card figure is, in a sentence, for the page's method notes."""
     if m == "spot_volume":
         return volume_method(f["id"], f["name"], f.get("cc_usd"))
     if m == "tokens":
@@ -832,18 +861,35 @@ def metric_note(m: str, f: dict) -> str:
 
 
 def card_notes(f: dict, head: dict) -> str:
-    """The card footer: who we are not, how the headline was ranked, and every figure kind shown."""
+    """The card footer, short enough for two readable lines: who we are not, how the headline was
+    ranked, and every figure kind shown, in a few words each. The full sentences are on the page
+    (``card_method``)."""
+    rule = head["rule"]
+    if head.get("scope") == "canton":
+        lead = METHOD_SHORT_CANTON
+    else:
+        lead = METHOD_SHORT.get(rule, RANKED_SHORT)
+    parts = [f"Independent data, not affiliated with {f['name']}.", lead]
+    for p in stats(f):
+        note = metric_short(p.get("m", ""), f)
+        if note and note not in parts:
+            parts.append(note)
+    return " ".join(x for x in parts if x)
+
+
+def card_method(f: dict, head: dict) -> list[str]:
+    """The card's figures in full sentences, for the page's method notes."""
     rule = head["rule"]
     if head.get("scope") == "canton":
         lead = METHOD_CANTON.format(what={"spot_volume": "by spot volume"}.get(rule, "by volume"))
     else:
         lead = METHOD.get(rule, "")
-    parts = [f"Independent data, not affiliated with {f['name']}.", lead]
+    out = [lead] if lead else []
     for p in stats(f):
         note = metric_note(p.get("m", ""), f)
-        if note and note not in parts:
-            parts.append(note)
-    return " ".join(x for x in parts if x)
+        if note and note not in out:
+            out.append(note)
+    return out
 
 
 # === card ==================================================================
@@ -1057,7 +1103,7 @@ def render_card_ours(f: dict, head: dict, t: int, path: Path, theme: str = "ligh
     when = stamp(t)
     wf = _font("Regular", 20 * S)
     d.text((W - M, y0), when, font=wf, fill=c["strip_2"], anchor="rm")
-    lines, nf = note_lines(d, card_notes(f, head), lambda z: _font("Regular", z), width, 18 * S, 15 * S, 11 * S)
+    lines, nf = note_lines(d, card_notes(f, head), lambda z: _font("Regular", z), width, 18 * S, 16 * S, 14 * S)
     for n, line in enumerate(lines):
         d.text((M, st + (58 + 20 * n if len(lines) > 1 else 66) * S), line, font=nf, fill=c["strip_2"], anchor="lm")
 
@@ -1373,7 +1419,8 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     <div class="panel">{_table([("Market", "l"), ("Price", ""), ("Basis", ""), ("Funding", ""), ("Spread", ""), ("Open interest", ""), ("Volume (24h)", "")], rows)}</div>
   </section>""")
 
-    notes = "".join(f"<li>{e(n)}</li>" for n in f["method"])
+    method = f["method"] + [x for x in card_method(f, head) if x not in f["method"]]
+    notes = "".join(f"<li>{e(n)}</li>" for n in method)
     parts.append(f"""  <section class="block">
     <h2>How we read {e(f['name'])}</h2>
     <ul class="notes">{notes}</ul>

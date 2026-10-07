@@ -241,8 +241,8 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
     for part, col in (("Live Canton DEX data from ", o["text"]), ("cantonvenues.com", o["accent"])):
         d.text((x, st + 30 * S), part, font=sf, fill=col, anchor="lm")
         x += d.textlength(part, font=sf)
-    lines, nf = vp.note_lines(d, footer_note(f, head), lambda z: vp._font("Regular", z), width, 19 * S, 14 * S,
-                              11 * S)
+    lines, nf = vp.note_lines(d, footer_note(f, head), lambda z: vp._font("Regular", z), width, 19 * S, 17 * S,
+                              14 * S)
     for n, line in enumerate(lines):  # two lines sit lower and closer: the strip is 86px tall
         d.text((M, st + (57 + 18 * n if len(lines) > 1 else 62) * S), line, font=nf, fill=o["text2"], anchor="lm")
 

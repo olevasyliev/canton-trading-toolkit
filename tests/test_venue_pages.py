@@ -118,8 +118,14 @@ def test_no_headline_or_card_tile_ranks_venues_on_price_across_sizes():
         h = vp.headline(f)
         assert "best execution" not in h["title"].lower() and " from $" not in h["title"]
         assert not any(p["k"].startswith("Best price") for p in vp.stats(f))
-    # a single quote won clearly is still a fact, named by direction and size
-    lead = vp.facts(d)["tradecraft"]["leads"][0]
+    # a single quote won clearly is still a fact, named by direction and size, once the leader's own
+    # network fee is known (Tradecraft's is not, so it is given a known one here)
+    assert not vp.facts(d)["tradecraft"]["leads"]
+    vp.NETWORK_FEE["tradecraft"] = ("usd", 0.1, 0.1)
+    try:
+        lead = vp.facts(d)["tradecraft"]["leads"][0]
+    finally:
+        del vp.NETWORK_FEE["tradecraft"]
     assert lead["rule"] == "best_quote" and lead["title"] == "Best price to buy USDCx with CC at $50K"
 
 
@@ -407,9 +413,11 @@ def test_volume_is_labelled_as_the_venue_reports_it_only_when_it_reports_dollars
     assert vp.volume_note("rocky", 0.12) == "quote-token turnover"
     pp = {p["k"]: p for p in vp.stats(f["pool-party"])}
     assert pp["Spot volume, 24h"]["n"] == "CC side at $0.1200 per CC"
-    note = vp.card_notes(f["pool-party"], vp.headline(f["pool-party"]))
-    assert "the CC side of each CC pool, converted at $0.1200 per CC" in note
-    assert "as Pool Party reports it" not in note
+    head = vp.headline(f["pool-party"])
+    assert "Volume: CC side at $0.1200 per CC." in vp.card_notes(f["pool-party"], head)
+    method = vp.card_method(f["pool-party"], head)
+    assert "24h volume: the CC side of each CC pool, converted at $0.1200 per CC." in method
+    assert not any("as Pool Party reports it" in x for x in method)
 
 
 def test_a_lead_needs_a_clear_margin_over_the_runner_up():
@@ -489,8 +497,10 @@ def test_card_footer_names_every_kind_of_figure_on_the_card():
     for slug, f in vp.facts(data()).items():
         head = vp.headline(f)
         note = vp.card_notes(f, head)
+        method = vp.card_method(f, head)
         for p in vp.stats(f):
-            assert vp.metric_note(p["m"], f) in note, (slug, p["m"])
+            assert vp.metric_short(p["m"], f) in note, (slug, p["m"])
+            assert vp.metric_note(p["m"], f) in method, (slug, p["m"])
 
 
 # === second verifier pass (2026-10-07) ======================================
@@ -508,8 +518,10 @@ def test_token_count_names_and_footer_apply_the_1k_rule_on_this_venue():
     for slug, t in (("tradecraft", tc), ("cantex", cx)):
         tile = vp.token_tile(f[slug])
         assert tile["names"] == t["names"] and tile["n"] == f"{t['n']} with $1K+ here"
-        note = vp.card_notes(f[slug], vp.headline(f[slug]))
-        assert f"Tokens: the {t['n']} with $1K or more of liquidity on {f[slug]['name']} itself" in note
+        head = vp.headline(f[slug])
+        assert f"Tokens: {t['n']} with $1K+ on {f[slug]['name']}." in vp.card_notes(f[slug], head)
+        assert (f"Tokens: the {t['n']} with $1K or more of liquidity on {f[slug]['name']} itself."
+                in vp.card_method(f[slug], head))
     # an order book is held to its depth within 1% of mid, not its total liquidity
     rows = [{"symbol": "A", "key": "A", "market": "A/USDCx", "liquidity_usd": 9_000, "depth_1pct_usd": 400},
             {"symbol": "B", "key": "B", "market": "B/USDCx", "liquidity_usd": 9_000, "depth_1pct_usd": 4_000},
@@ -559,3 +571,50 @@ def test_tradecraft_card_is_plain_unless_its_lead_is_switched_on():
     assert "Within 1% of mid" not in vp.card_notes(f, h) and "Depth:" not in vp.card_notes(f, h)
     # the override restores the lead
     assert vp.headline({**f, "venue": {**f["venue"], "lead": True}})["rule"] == f["leads"][0]["rule"]
+
+
+# === third pass: price leads need a known fee and $1K (2026-10-07) ===========
+
+def _edel(d, size, out):
+    d["execution"]["pairs"].append({"key": "EDELX", "kind": "cc", "symbol": "EDELx",
+                                    "venues": list(out), "rows": [_row("buy", size, out, max(out, key=out.get))]})
+    d["tokens"]["tokens"].append({"symbol": "EDELx", "key": "EDELX", "venues": {
+        v: {"liquidity_usd": 80_000} for v in out}})
+    return vp.facts(d)
+
+
+def test_a_venue_whose_own_network_fee_is_unknown_never_leads_on_price():
+    assert "poolparty" not in vp.NETWORK_FEE and "tradecraft" not in vp.NETWORK_FEE
+    # Pool Party 2% ahead of Tradecraft at $10K: a clear quote, but Pool Party's fee is unknown
+    f = _edel(data(), 10_000, {"poolparty": 1.02, "tradecraft": 1.0})
+    assert not any(x["rule"] == "best_quote" for x in f["pool-party"]["leads"])
+    assert vp.headline(f["pool-party"])["rule"] == "pools"
+    assert vp.headline(f["pool-party"])["title"] == "Pool Party, priced live on Canton"
+    # OneSwap's documented $1.5-2 counts: charged $2 (2 bp at $10K), the runner-up charged nothing
+    f = _edel(data(), 10_000, {"oneswap": 1.02, "tradecraft": 1.0})
+    lead = next(x for x in f["oneswap"]["leads"] if x["rule"] == "best_quote")
+    assert lead["margin"] * 10_000 == pytest.approx(200 - 2, abs=1)
+    # an edge the top of the leader's fee range wipes out is not a lead: 25 bp at $1K vs $2 (20 bp)
+    # leaves 5 bp, under the 10 bp bar
+    f = _edel(data(), 1_000, {"oneswap": 1.0025, "tradecraft": 1.0})
+    assert not any(x["rule"] == "best_quote" for x in f["oneswap"]["leads"])
+
+
+def test_no_price_lead_under_1k():
+    assert vp.MIN_PRICE_LEAD_USD == 1_000
+    # OneSwap 5% ahead at $100: even after its $2 fee (2%) that clears the bar, but $100 is too small
+    f = _edel(data(), 100, {"oneswap": 1.05, "tradecraft": 1.0})
+    assert not any(x["rule"] == "best_quote" for x in f["oneswap"]["leads"])
+    f = _edel(data(), 1_000, {"oneswap": 1.05, "tradecraft": 1.0})
+    assert any(x["rule"] == "best_quote" for x in f["oneswap"]["leads"])
+
+
+def test_every_card_footer_fits_two_readable_lines():
+    ImageDraw = pytest.importorskip("PIL.ImageDraw")
+    Image = pytest.importorskip("PIL.Image")
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    S = 2
+    for slug, f in vp.facts(data()).items():
+        note = vp.card_notes(f, vp.headline(f))
+        lines, font = vp.note_lines(d, note, lambda z: vp._font("Regular", z), (1200 - 112) * S, 19 * S, 17 * S, 14 * S)
+        assert len(lines) <= 2 and font.size >= 14 * S and not any("…" in x for x in lines), (slug, note)
