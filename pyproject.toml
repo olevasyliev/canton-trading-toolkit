@@ -16,13 +16,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pillow>=10",
     "pytest",
     "pytest-asyncio",
     "ruff",
 ]
-# the Canton Venues example: its MCP server
+# the Canton Venues example: its MCP server and the venue share cards
 venues = [
     "mcp>=2.2,<3",
+    "pillow>=10",
 ]
 
 [tool.hatch.build.targets.wheel]

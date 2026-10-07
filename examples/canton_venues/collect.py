@@ -14,7 +14,7 @@ Sources, all public, no keys:
 Every tick (default 300 s) prices both venues from reserves; every third tick
 also refreshes candles, per-pool volumes and DefiLlama. Output goes to
 ``<out>/api/v1/*.json``, written atomically, which the page and anyone else
-reads.
+reads, plus a static page per venue under ``<out>/venues/`` (venue_pages.py).
 
     python collect.py --out /var/www/canton-venues --interval 300
 """
@@ -35,6 +35,7 @@ import alerts as al
 import digest
 import httpx
 import model as m
+import venue_pages
 from model import CC, VenuePool
 
 from cantonvenues import (
@@ -116,6 +117,7 @@ def r(x, n=6):
 
 class Collector:
     def __init__(self, out: Path) -> None:
+        self.out = out
         self.api = out / "api" / "v1"
         self.cantex = CantexPublicData()
         self.tradecraft = TradecraftAdapter()
@@ -617,6 +619,14 @@ class Collector:
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
+        try:  # a page per venue, its share card redrawn every few ticks
+            venue_pages.build(self.out, {"venues": venues, "tokens": {"t": now, "tokens": tokens},
+                                         "execution": {"t": now, "pairs": execution},
+                                         "lp": {"t": now, "pools": lp},
+                                         "perps": {"t": now, "markets": perps}},
+                              now, cards=self.tick_no % SLOW_EVERY == 0)
+        except Exception:  # one bad page must not fail the tick
+            log.exception("venue pages")
         await self._alerts(tokens, premium, scan, now)
         await self._daily(summary, tokens, premium)
         self.tick_no += 1

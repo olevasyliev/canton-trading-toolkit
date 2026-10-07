@@ -391,6 +391,7 @@ body:not(.tv) #tokenview { display: none; }
   <section class="block" id="venues">
     <h2>Venues</h2>
     <p class="sub" id="venlead">Every Canton trading venue we know of, and what we can read from each.</p>
+    <p class="sub" style="margin-top:-8px"><a href="venues/">A page for every venue we read, with a card to share →</a></p>
     <div class="panel"><div id="venbar"></div><div class="tablewrap"><table id="ventable"></table></div></div>
   </section>
 
@@ -732,6 +733,8 @@ function bindPremTip() {
 }
 
 /* ---------- venues ---------- */
+// venues with their own page (venue_pages.py); Rocky's perp row opens Rocky's page
+const VP = { temple: "temple", cantex: "cantex", tradecraft: "tradecraft", rocky: "rocky", rocky_perp: "rocky", ekiden: "ekiden", oneswap: "oneswap", poolparty: "pool-party" };
 const VST = { priced: "Priced", volume: "Volume only", next: "Next", waiting: "Waiting on API", closed: "Closed data", testnet: "Testnet", down: "Unreachable" };
 function renderVenues() {
   const d = D.venues, rows = d.venues || [];
@@ -746,7 +749,7 @@ function renderVenues() {
   const order = { priced: 0, down: 1, volume: 2, next: 3, waiting: 4, closed: 5, testnet: 6 };
   const sorted = [...rows].sort((a, b) => (order[a.status] - order[b.status]) || ((b.volume_24h_usd || 0) - (a.volume_24h_usd || 0)));
   $("ventable").innerHTML = `<thead><tr><th class="l">Venue</th><th class="l hide-sm">Type</th><th>Volume (24h)</th><th class="l">Data</th><th class="l hide-sm">What we read</th></tr></thead><tbody>` +
-    sorted.map((x) => `<tr><td class="l"><b style="${VC[x.id] && x.status === "priced" ? "color:" + VC[x.id] : ""}">${esc(x.name)}</b></td><td class="l hide-sm muted">${esc(x.kind)}</td>
+    sorted.map((x) => `<tr><td class="l">${VP[x.id] && x.status !== "down" ? `<a href="venues/${VP[x.id]}/">` : ""}<b style="${VC[x.id] && x.status === "priced" ? "color:" + VC[x.id] : ""}">${esc(x.name)}</b>${VP[x.id] && x.status !== "down" ? "</a>" : ""}</td><td class="l hide-sm muted">${esc(x.kind)}</td>
       <td class="num">${x.volume_24h_usd == null ? "–" : money(x.volume_24h_usd)}</td><td class="l"><span class="vst ${x.status}">${VST[x.status] || esc(x.status)}</span></td><td class="l note hide-sm">${esc(x.note)}</td></tr>`).join("") + "</tbody>";
 }
 
