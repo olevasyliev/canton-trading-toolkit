@@ -20,7 +20,10 @@ START = END - 7 * DAY     # 2026-09-30
 LLAMA = {"temple": 30e6, "cantex": 4e6, "rocky": 3e6, "pool-party": 4000.0}
 
 
-def hist(days: int = 14, read: int = NOW, skip: dict | None = None, extra_total: float = 0.0) -> dict:
+FINAL = END + 7 * 3600     # a read of DefiLlama's day record six hours and more after the day closed
+
+
+def hist(days: int = 14, read: int = FINAL, skip: dict | None = None, extra_total: float = 0.0) -> dict:
     """venue_history.json with DefiLlama daily points for the last ``days`` days before END, each
     venue's figure growing by 1% a day; ``skip`` drops a venue's points on some days."""
     skip = skip or {}
@@ -36,7 +39,7 @@ def hist(days: int = 14, read: int = NOW, skip: dict | None = None, extra_total:
     tc = {"source": "tradecraft", "t": read, "points": [[END - k * DAY, 200_000.0] for k in range(6, 0, -1)]}
     daily["tradecraft"] = tc
     return {"daily": daily, "daily_total": [[t, v + extra_total] for t, v in sorted(total.items())],
-            "hourly": {"t": [], "venues": {}}, "t": NOW - 120}
+            "hourly": {"t": [], "venues": {}}, "t": read - 120}
 
 
 def test_the_period_is_the_seven_finished_utc_days():
@@ -83,7 +86,19 @@ def test_a_protocol_we_do_not_know_on_the_canton_list_drops_the_canton_claim():
 
 def test_a_daily_record_read_before_the_day_closed_is_not_counted():
     # read at 23:59: the last day's figure was DefiLlama's running total, so it is no figure at all
-    assert wk.week(hist(read=END - 60), NOW) is None
+    w = wk.week(hist(read=END - 60), NOW)
+    assert w is None or not w["venues"]
+    # read at 00:15: its point for the closed day may still be a pre-midnight rolling 24 h figure.
+    # The venues wait (pending), they are not left out, and nothing is published
+    h = hist(read=END + 15 * 60)
+    figs, early = wk.day_figures(h, {}, "temple")
+    assert early == {END - DAY} and END - DAY not in figs and END - 2 * DAY in figs  # only the day just closed
+    h["daily"]["tradecraft"]["points"].insert(0, [START, 200_000.0])  # one venue with a final week
+    w = wk.week(h, NOW)
+    assert {x["slug"] for x in w["pending"]} == set(LLAMA) and not w["left_out"]
+    assert all(x["days"] == [END - DAY] for x in w["pending"])
+    # read seven hours after the close: everything up to the closed day is final
+    assert not wk.day_figures(hist(), {}, "temple")[1]
 
 
 def test_the_venues_own_day_records_win_and_cantex_needs_our_price_for_the_day():
@@ -102,7 +117,8 @@ def test_the_venues_own_day_records_win_and_cantex_needs_our_price_for_the_day()
     cantex = next(v for v in w["venues"] if v["slug"] == "cantex")
     assert cantex["src"] == ["defillama"] + ["cantex"] * 6  # no price record for 30 Sep: DefiLlama's day
     note = wk.venue_note(cantex, w["days"])
-    assert "DefiLlama's Canton DEX record for 30 Sep" in note and "at our CC price" in note
+    assert "an outside daily record of the closed day (small print) for 30 Sep" in note and "at our CC price" in note
+    assert "DefiLlama" not in note
     assert wk.venue_note(temple, w["days"]) == "Temple: Temple's own settled volume, each UTC day."
 
 
@@ -174,7 +190,7 @@ def test_the_card_draws_no_source_but_ours():
 def test_later_weeks_link_earlier_permalinks_and_never_rewrite_them(tmp_path):
     _built(tmp_path)
     first = (tmp_path / "weekly" / "2026-10-06" / "index.html").read_text()
-    h = hist(days=15, read=NOW + DAY)
+    h = hist(days=15, read=FINAL + DAY)
     for s in h["daily"].values():
         if s["source"] == "defillama":
             s["points"] = [[t + DAY, v] for t, v in s["points"]]
@@ -193,9 +209,59 @@ def test_the_guard_holds_the_last_good_card_on_a_jump_or_a_stopped_collector(tmp
         s["points"] = [[t, v * 5] for t, v in s["points"]]
     h["daily_total"] = [[t, v * 5] for t, v in h["daily_total"]]
     assert _built(tmp_path, h, NOW + 6 * 3600, g) is None  # 5x in a day: held
-    stale = hist()
-    stale["t"] = NOW - 3 * 3600
-    assert _built(tmp_path, stale, NOW, pg.PublishGuard(tmp_path / "weekly" / "published.json")) is None
+    # the collector stopped: its last read of a daily record is three hours old
+    assert _built(tmp_path, hist(), FINAL + 3 * 3600, pg.PublishGuard(tmp_path / "weekly" / "published.json")) is None
+
+
+def test_freshness_is_the_last_daily_read_not_the_hourly_sample(tmp_path):
+    g = pg.PublishGuard(tmp_path / "weekly" / "published.json")
+    assert _built(tmp_path, hist(), FINAL + 5 * 60, g) is not None
+    h = hist()
+    h["t"] = FINAL - 55 * 60  # the last hourly sample is 55 minutes old, over the 40-minute limit ...
+    assert _built(tmp_path, h, FINAL + 5 * 60, g) is not None  # ... but the daily records were read now
+
+
+def test_the_0020_run_publishes_nothing_until_defillama_days_are_final(tmp_path):
+    assert _built(tmp_path, hist(read=END + 15 * 60), END + 20 * 60) is None
+    assert not (tmp_path / "weekly").exists()
+    assert _built(tmp_path, hist(read=END + 6 * 3600 + 5 * 60), END + 6 * 3600 + 20 * 60) is not None
+
+
+def test_tradecraft_joins_once_it_has_all_seven_days():
+    # the 9 Oct run: 2 to 8 Oct, Tradecraft's own days read after 8 Oct closed
+    now = END + 2 * DAY + 7 * 3600
+    h = hist(days=16, read=now - 60)
+    for s in h["daily"].values():
+        if s["source"] == "defillama":
+            s["points"] = [[t + 2 * DAY, v] for t, v in s["points"]]
+    h["daily_total"] = [[t + 2 * DAY, v] for t, v in h["daily_total"]]
+    h["daily"]["tradecraft"]["points"] = [[END - DAY * k, 200_000.0] for k in range(6, -2, -1)]
+    w = wk.week(h, now)
+    assert w["range"] == "2 to 8 Oct 2026" and "tradecraft" in [v["slug"] for v in w["venues"]]
+    assert not w["left_out"]
+
+
+def test_shown_shares_add_up_to_100_and_day_figures_keep_one_decimal():
+    w = wk.week(hist(), NOW)
+    for v, share in zip(w["venues"], (0.79261, 0.12849, 0.07877, 0.00013)):
+        v["share"] = share
+    shown = wk.shares(w)
+    assert shown == ["79.3%", "12.8%", "7.9%", "<0.1%"]
+    assert round(sum(float(x[:-1]) for x in shown if x != "<0.1%"), 1) == 100.0
+    assert wk.usd(28_014_286) == "$28.0M" and wk.usd(45_723_736) == "$45.7M" and wk.usd(35_852) == "$35.9K"
+
+
+def test_the_page_names_defillama_once_in_small_print_with_its_own_method_and_the_nav_links_it(tmp_path):
+    _built(tmp_path)
+    page = (tmp_path / "weekly" / "index.html").read_text()
+    body = page.split("</head>")[1]
+    assert body.count("DefiLlama") == 1 and '<p class="fine">' in body.split("DefiLlama")[0][-400:]
+    assert wk.WEEKLY_METHOD in page and wk.SHELL_METHOD not in page
+    assert '<a href="/weekly/">This week</a>' in page
+    api = json.loads((tmp_path / "api" / "v1" / "weekly.json").read_text())
+    assert not any("DefiLlama" in n for n in api["notes"]) and "DefiLlama" in api["small_print"]
+    dash = (Path(wk.__file__).parent / "site" / "index.html").read_text()
+    assert '<a href="/weekly/">This week</a>' in dash
 
 
 def test_crosscheck_compares_the_weekly_sums_and_reports_a_stale_or_missing_week(monkeypatch):

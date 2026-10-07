@@ -77,7 +77,7 @@ LLAMA_SLUG = {"temple": "Temple", "cantex": "Cantex", "rocky": "Rocky Exchange S
 # where a day's figure came from, as the page says it
 SOURCE = {"temple": "Temple's own settled volume", "cantex": "Cantex's own volume in CC, at our CC price that day",
           "tradecraft": "Tradecraft's own hourly volume history", "reading": "our reading of its 24-hour volume "
-          "just after midnight UTC", "defillama": "DefiLlama's Canton DEX record"}
+          "just after midnight UTC", "defillama": "an outside daily record of the closed day (small print)"}
 OWN_DAY = {"temple", "cantex"}  # venues whose own API answers for an exact past day
 
 
@@ -179,20 +179,36 @@ def _readings(hist: dict, slug: str) -> dict[int, float]:
     return out
 
 
-def day_figures(hist: dict, days_cache: dict, slug: str) -> dict[int, tuple[float, str]]:
-    """Every day we have a figure for, with where it came from, best source first."""
+def final_after(source: str) -> int:
+    """How long after a day closes a read of this daily record holds that day's final figure.
+    DefiLlama's point for the running day is a rolling 24-hour figure, not the day so far (its 7 Oct
+    point at 21:00 UTC, $34.86M, was its 24 h total; Temple's own 00:00 to 21:00 was $31.31M), so
+    just after midnight its point for the day that closed may still be a pre-midnight reading: it
+    counts only from a read ``FINAL_AFTER_S`` after the close. Tradecraft's own hourly history is
+    final once read after the close (its last hour may be partial before)."""
+    return FINAL_AFTER_S if source == "defillama" else 0
+
+
+def day_figures(hist: dict, days_cache: dict, slug: str) -> tuple[dict[int, tuple[float, str]], set[int]]:
+    """(every day we have a final figure for, with where it came from, best source first; the days
+    whose only figure is not final yet)."""
     out: dict[int, tuple[float, str]] = {}
+    early: set[int] = set()
     series = (hist.get("daily") or {}).get(slug) or {}
     read = series.get("t") or 0
-    for t, v in series.get("points") or []:  # DefiLlama (or Tradecraft's own), only from after the day closed
-        if v and v > 0 and read >= int(t) + DAY:
-            out[int(t)] = (float(v), series.get("source") or "defillama")
+    source = series.get("source") or "defillama"
+    for t, v in series.get("points") or []:
+        if v and v > 0:
+            if read >= int(t) + DAY + final_after(source):
+                out[int(t)] = (float(v), source)
+            else:
+                early.add(int(t))
     for t, v in _readings(hist, slug).items():
         out[t] = (v, "reading")
     for t, rec in (days_cache.get(slug) or {}).items():
         if rec.get("usd") and rec["usd"] > 0:
             out[int(t)] = (float(rec["usd"]), slug)
-    return out
+    return out, early - set(out)
 
 
 def week(hist: dict, now: int, days_cache: dict | None = None) -> dict | None:
@@ -201,12 +217,15 @@ def week(hist: dict, now: int, days_cache: dict | None = None) -> dict | None:
     days = [start + n * DAY for n in range(DAYS)]
     before = [t - DAYS * DAY for t in days]
     known = set((hist.get("daily") or {})) | set(days_cache or {})
-    venues, left_out = [], []
+    venues, left_out, pending = [], [], []
     for v in VENUES:
         if v["slug"] not in known:
             continue
-        figs = day_figures(hist, days_cache or {}, v["slug"])
+        figs, early = day_figures(hist, days_cache or {}, v["slug"])
         missing = [t for t in days if t not in figs]
+        if missing and set(missing) <= early:  # only not final yet: the card waits for it
+            pending.append({"slug": v["slug"], "name": v["name"], "days": missing})
+            continue
         if missing:
             left_out.append({"slug": v["slug"], "name": v["name"], "why": f"no daily figure for {_days_text(missing)}"})
             continue
@@ -226,7 +245,7 @@ def week(hist: dict, now: int, days_cache: dict | None = None) -> dict | None:
     return {"start": start, "end": end, "slug": datetime.fromtimestamp(end - DAY, UTC).strftime("%Y-%m-%d"),
             "range": date_range(start, end), "days": days, "by_day": by_day, "total": total,
             "prev_total": prev_total, "change": total / prev_total - 1 if prev_total else None,
-            "venues": venues, "left_out": left_out,
+            "venues": venues, "left_out": left_out, "pending": pending,
             "scope": "canton" if on_canton(hist, days, {v["slug"] for v in venues}) else "read",
             "sources": sorted({s for v in venues for s in v["src"]})}
 
@@ -252,6 +271,21 @@ def label(w: dict) -> str:
 
 def pct(x: float) -> str:
     return "<0.1%" if x < 0.0005 else f"{x * 100:.1f}%"
+
+
+def shares(w: dict) -> list[str]:
+    """Each venue's share in tenths of a percent, rounded by largest remainder so the shown shares
+    add up to 100.0%; a share that rounds to nothing shows as "<0.1%"."""
+    raw = [v["share"] * 1000 for v in w["venues"]]
+    units = [int(x) for x in raw]
+    for i in sorted(range(len(raw)), key=lambda i: -(raw[i] - units[i]))[:1000 - sum(units)]:
+        units[i] += 1
+    return ["<0.1%" if u == 0 else f"{u / 10:.1f}%" for u in units]
+
+
+def usd(v: float) -> str:
+    """Money with one decimal kept in millions, so a column of days reads alike: $28.0M, $45.7M."""
+    return f"${v / 1e6:.1f}M" if abs(v) >= 999_950 else money(v)
 
 
 def change_text(w: dict) -> str | None:
@@ -308,12 +342,12 @@ def render_card(w: dict, path: Path) -> None:
         d.text((bx + bw / 2, base + 46 * S), f"{day:%a}", font=_font("Regular", 17 * S), fill=c["text3"],
                anchor="mm")
         if n == peak:
-            d.text((bx + bw / 2, base - h - 14 * S), money(v), font=_font("SemiBold", 20 * S), fill=c["text"],
+            d.text((bx + bw / 2, base - h - 14 * S), usd(v), font=_font("SemiBold", 20 * S), fill=c["text"],
                    anchor="ms")
     d.line((x0, base, x1, base), fill=c["line2"], width=S)
 
     # each counted venue's share of the week, largest first, on one line
-    parts = [(v["name"], pct(v["share"])) for v in w["venues"]]
+    parts = [(v["name"], sh) for v, sh in zip(w["venues"], shares(w))]
     head = "By venue"
     for z in range(27, 17, -1):
         nf, pf, sep = _font("SemiBold", z * S), _font("Regular", z * S), 34 * S
@@ -348,12 +382,19 @@ def render_card(w: dict, path: Path) -> None:
 
 # === page ==================================================================
 
+# the shared footer's method line is about the live pages (24h figures); this page has its own
+SHELL_METHOD = "Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how."
+WEEKLY_METHOD = ("This week's volume is each venue's spot volume for each closed UTC day, summed over the "
+                 "seven days; where a venue reports token amounts we convert them at that day's price, and "
+                 "How this is counted above says which record each day comes from.")
+
 PAGE_CSS = """<style>
 .wk .vbig { font-size: 44px; }
 .wk .charts { margin-top: 14px; }
 .wk .hbars .hrow { grid-template-columns: minmax(0, 7em) minmax(0, 1fr) 5.2em; }
 .wk ol.earlier { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); }
 .wk ol.earlier li { margin: 3px 0; }
+.wk .fine { color: var(--text-3); font-size: 12px; margin: 10px 0 0; max-width: 80ch; }
 @media (max-width: 720px) { .wk .vbig { font-size: 36px; } }
 </style>"""
 
@@ -388,25 +429,34 @@ def venue_note(v: dict, days: list[int]) -> str:
 
 
 def notes(w: dict) -> list[str]:
+    """How the week is counted, venue by venue. Names no outside aggregator: that is ``small_print``."""
     out = [venue_note(v, w["days"]) for v in w["venues"]]
     if "reading" in w["sources"]:
         out.append("Rocky and Pool Party publish only a rolling 24-hour volume: our first reading after "
                    "midnight UTC stands for the day that just closed.")
-    if "defillama" in w["sources"]:
-        out.append("Days we had no venue record or reading of come from DefiLlama's Canton DEX record, one "
-                   "figure per UTC day, read after the day closed.")
     if w["scope"] == "canton":
-        out.append("Canton DEX spot volume: every protocol on DefiLlama's Canton DEX list, on every day of the "
-                   "week, is a venue counted here.")
+        out.append("Canton DEX spot volume: every DEX on the public list of Canton DEX volume, on every day "
+                   "of the week, is counted here.")
     else:
-        out.append("Not every venue on DefiLlama's Canton DEX list has a full week here, so this is the volume "
-                   "among the Canton venues we read, not all of Canton.")
+        out.append("Not every DEX on the public list of Canton DEX volume has a full week here, so this is the "
+                   "volume among the Canton venues we read, not all of Canton.")
     for x in w["left_out"]:
-        out.append(f"{x['name']} is not counted this week: {x['why']}. Never estimated or filled with a zero.")
+        out.append(f"Not in the total: {x['name']}, {x['why']}. A missing day is never estimated or "
+                   "filled with a zero.")
     if w["change"] is None:
         out.append("No week-on-week change: not every venue counted has all seven days before this period.")
-    out.append("Spot only: perps are not counted. OneSwap publishes no volume, so it has no figure.")
+    out.append("Not in the total: perps, and OneSwap, which publishes no volume.")
     return out
+
+
+def small_print(w: dict) -> str:
+    """The one line that names the outside daily history: where it fills a day, and the list the
+    "Canton DEX" scope is checked against."""
+    if "defillama" in w["sources"]:
+        return ("The outside daily record that fills a closed day we have no venue record or reading of is "
+                "DefiLlama's daily history, also the public list of Canton DEX volume the scope is checked "
+                "against.")
+    return "The public list of Canton DEX volume the scope is checked against is DefiLlama's."
 
 
 def page(w: dict, t: int, permalink: bool, card_v: int, earlier: list[str]) -> str:
@@ -420,9 +470,9 @@ def page(w: dict, t: int, permalink: bool, card_v: int, earlier: list[str]) -> s
     if w["change"] is not None:
         stats.append(("Week on week", f"{w['change'] * 100:+.1f}%"))
     stats.append(("Venues counted", str(len(w["venues"]))))
-    days = [(f"{datetime.fromtimestamp(t0, UTC):%a} {_date(t0, False)}", v, money(v))
+    days = [(f"{datetime.fromtimestamp(t0, UTC):%a} {_date(t0, False)}", v, usd(v))
             for t0, v in zip(w["days"], w["by_day"])]
-    shares = [(v["name"], v["total"], f"{pct(v['share'])}") for v in w["venues"]]
+    by_venue = [(v["name"], v["total"], sh) for v, sh in zip(w["venues"], shares(w))]
     alt = f"{label(w)}, {w['range']}: {money(w['total'])}."
     crumbs = (f'<a href="/">Canton Venues</a> / <a href="/weekly/">This week</a> / {e(w["slug"])}' if permalink
               else '<a href="/">Canton Venues</a> / This week')
@@ -450,17 +500,20 @@ def page(w: dict, t: int, permalink: bool, card_v: int, earlier: list[str]) -> s
     <h2>By day and by venue</h2>
     <div class="charts">
       <div class="panel"><h3>Spot volume by day</h3><p class="sub">Every venue counted, each UTC day.</p>{_bars(days)}</div>
-      <div class="panel"><h3>Share of the week</h3><p class="sub">Each venue's seven days over the total.</p>{_bars(shares)}</div>
+      <div class="panel"><h3>Share of the week</h3><p class="sub">Each venue's seven days over the total.</p>{_bars(by_venue)}</div>
     </div>
   </section>
   <section class="block">
     <h2>How this is counted</h2>
     <ul class="notes">{"".join(f"<li>{e(n)}</li>" for n in notes(w))}</ul>
+    <p class="fine">{e(small_print(w))}</p>
     <p class="sub" style="margin-top:12px">Every figure is in <a href="/api/v1/weekly.json">weekly.json</a>. Something wrong? <a href="/#contact">Write to us</a>.</p>
   </section>
   {f'<section class="block"><h2>Earlier weeks</h2><ol class="earlier">{prior}</ol></section>' if prior else ""}
   </div>"""
-    return _shell(title, desc, url, card, body, t)
+    html = _shell(title, desc, url, card, body, t)
+    assert SHELL_METHOD in html, "the shared footer's method text changed: update SHELL_METHOD"
+    return html.replace(SHELL_METHOD, WEEKLY_METHOD)
 
 
 # === build =================================================================
@@ -475,7 +528,8 @@ def _api(w: dict, t: int) -> dict:
                         "share": round(v["share"], 5), "daily": [round(x, 2) for x in v["daily"]],
                         "daily_source": v["src"]}
                        for v in w["venues"]],
-            "left_out": w["left_out"], "notes": notes(w)}
+            "left_out": w["left_out"], "notes": notes(w), "small_print": small_print(w),
+            "shares_shown": shares(w)}
 
 
 def build(out: Path, hist: dict, now: int, guard: PublishGuard | None = None,
@@ -488,9 +542,15 @@ def build(out: Path, hist: dict, now: int, guard: PublishGuard | None = None,
     if w is None:
         log.warning("weekly: no venue has a full week of daily figures read since the week ended")
         return None
+    if w["pending"]:  # never publish a week with a day that is not final yet; a later run will
+        log.warning("weekly held: not final yet: %s", "; ".join(
+            f"{x['name']} {_days_text(x['days'])}" for x in w["pending"]))
+        return None
     if guard is not None:
-        # the collector's last hourly reading: a stopped collector holds the card (STALE_AFTER_S)
-        age = now - hist["t"] if hist.get("t") else None
+        # the collector's last read of a daily record (every slow refresh, ~15 min): a stopped
+        # collector holds the card (STALE_AFTER_S). Not hist["t"]: that moves only once an hour
+        reads = [x.get("t") for x in (hist.get("daily") or {}).values() if x.get("t")]
+        age = now - max(reads) if reads else None
         why = guard.check(SLUG, {"total": w["total"]}, now, age)
         if why and (root / "index.html").exists():
             log.warning("weekly held on its last good card: %s", why)
