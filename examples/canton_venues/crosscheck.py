@@ -8,6 +8,10 @@ same figures independently, and compares. Two kinds of source:
 - DefiLlama's Canton lists (DEX volume per protocol, protocol TVL on Canton). Its windows and token
   prices are its own (not checked against its docs), so only a gap over ``LLAMA_GAP`` counts.
 
+The weekly card (weekly.py, ``api/v1/weekly.json``) is checked too, when ``--weekly`` is given: each
+counted venue's seven-day sum against DefiLlama's daily figures for the same days (``LLAMA_GAP``),
+Temple's against Temple's own settled volume read again day by day (``GAP``), and the card's age.
+
 When any gap is over its threshold, or the cards have not been republished for ``STALE_CARDS_S``,
 ONE Telegram message goes from the site's bot (TELEGRAM_BOT_TOKEN, @cantonvenuesbot) to the
 owner's chat (CONTACT_CHAT_ID), both from the server's .env, the same pair contact.py uses. When
@@ -35,6 +39,7 @@ log = logging.getLogger("crosscheck")
 GAP = 0.15             # venue API read directly, same figure: a gap over 15% is a fault on our side or theirs
 LLAMA_GAP = 0.35       # DefiLlama, its own windows and prices: only a gross gap counts
 STALE_CARDS_S = 2 * 3600  # no card republished for two hours: the collector or the guard is stuck
+STALE_WEEKLY_S = 2 * 86400  # a weekly card whose period ended over two days ago: its timer is stuck
 
 GECKO = "https://api.coingecko.com/api/v3/simple/price"
 TEMPLE = "https://api.templedigitalgroup.com/api/exchange/settled_volume"
@@ -158,6 +163,52 @@ def llama_figures(get: Get) -> dict:
     return out
 
 
+def weekly_figures(get: Get, weekly: dict) -> dict:
+    """The weekly card's per-venue sums, fetched again: {("weekly", "volume:<slug>"): (value, source)}."""
+    out: dict = {}
+    days = [t for t, _ in weekly.get("by_day") or []]
+    counted = {v["slug"]: v for v in weekly.get("venues") or []}
+    if not days:
+        return out
+    try:
+        raw = get(LLAMA_DEXS, {"excludeTotalDataChart": "true"})
+        by_day = {int(t): by for t, by in raw.get("totalDataChartBreakdown") or [] if isinstance(by, dict)}
+        for slug, name in LLAMA_NAMES.items():
+            if slug not in counted:
+                continue
+            vals = [(by_day.get(t) or {}).get(name) for t in days]
+            if all(vals):  # a day DefiLlama no longer has is not checked, never summed as 0
+                out[("weekly", f"volume:{slug}")] = (float(sum(vals)), "DefiLlama daily, same days")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("defillama weekly: %s", type(exc).__name__)
+        out[("_failed", "defillama weekly")] = (None, "defillama weekly")
+    if "temple" in counted:
+        try:
+            # one call a day (Temple answers "time window must not exceed 24 hours"), each the window
+            # DefiLlama's Temple adapter asks for: day start + 1 s to day end
+            fmt = "%Y-%m-%dT%H:%M:%SZ"
+            total = 0.0
+            for t in days:
+                raw = get(TEMPLE, {"start_time": datetime.fromtimestamp(t + 1, UTC).strftime(fmt),
+                                   "end_time": datetime.fromtimestamp(t + 86400, UTC).strftime(fmt)})
+                total += float(raw["total_volume_usd"])
+            out[("weekly", "volume:temple:own")] = (total, "Temple settled_volume, same days")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("temple weekly: %s", type(exc).__name__)
+            out[("_failed", "temple weekly")] = (None, "temple weekly")
+    return out
+
+
+def weekly_published(weekly: dict) -> dict:
+    """weekly.json in the shape ``compare`` reads (published.json's)."""
+    figs = {}
+    for v in weekly.get("venues") or []:
+        figs[f"volume:{v['slug']}"] = v["total_usd"]
+        if v["slug"] == "temple":
+            figs["volume:temple:own"] = v["total_usd"]
+    return {"venues": {"weekly": {"t": weekly.get("t"), "figures": figs}}}
+
+
 # === compare ===============================================================
 
 def compare(published: dict, theirs: dict, limit: float) -> list[dict]:
@@ -181,13 +232,24 @@ def _usd(v: float) -> str:
     return (f"${v / 1e6:.2f}M" if a >= 1e6 else f"${v / 1e3:.1f}K" if a >= 1e3 else f"${v:.0f}")
 
 
-def run(published: dict, get: Get = http_get, now: datetime | None = None) -> tuple[str | None, list[dict]]:
-    """The message to send (None when all is fine) and every comparison made."""
+def run(published: dict, get: Get = http_get, now: datetime | None = None,
+        weekly: dict | None = None) -> tuple[str | None, list[dict]]:
+    """The message to send (None when all is fine) and every comparison made. ``weekly`` is
+    weekly.json: {} when the file is missing, None to skip the weekly check."""
     now = now or datetime.now(UTC)
     direct, llama = venue_figures(get, now), llama_figures(get)
     rows = compare(published, direct, GAP) + compare(published, llama, LLAMA_GAP)
-    failed = sorted({src for (k, _), (_, src) in {**direct, **llama}.items() if k == "_failed"})
+    wk = weekly_figures(get, weekly) if weekly else {}
+    if wk:  # the card's days come from the venues' own records first: DefiLlama gets its looser limit
+        pub = weekly_published(weekly)
+        rows += compare(pub, {k: v for k, v in wk.items() if "DefiLlama" not in v[1]}, GAP)
+        rows += compare(pub, {k: v for k, v in wk.items() if "DefiLlama" in v[1]}, LLAMA_GAP)
+    failed = sorted({src for (k, _), (_, src) in {**direct, **llama, **wk}.items() if k == "_failed"})
     lines = []
+    if weekly is not None and not weekly.get("end"):
+        lines.append("No weekly card published (api/v1/weekly.json is missing).")
+    elif weekly is not None and now.timestamp() - weekly["end"] > STALE_WEEKLY_S:
+        lines.append(f"Weekly card not regenerated: its week ended {(now.timestamp() - weekly['end']) / 86400:.1f} days ago.")
     ts = [v.get("t", 0) for v in (published.get("venues") or {}).values()]
     if not ts:
         lines.append("No card figures published at all (venues/published.json is empty).")
@@ -226,6 +288,7 @@ def send(text: str) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--published", type=Path, required=True, help="venues/published.json from the collector")
+    ap.add_argument("--weekly", type=Path, help="api/v1/weekly.json from weekly.py: check the weekly card too")
     ap.add_argument("--dry-run", action="store_true", help="print the comparison, send nothing")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -233,7 +296,13 @@ def main() -> None:
         published = json.loads(args.published.read_text())
     except (OSError, ValueError):
         published = {}
-    text, rows = run(published)
+    weekly = None
+    if args.weekly:
+        try:
+            weekly = json.loads(args.weekly.read_text())
+        except (OSError, ValueError):
+            weekly = {}
+    text, rows = run(published, weekly=weekly)
     for r in rows:
         log.info("%-10s %-12s ours %12s  %-34s %12s  %+6.1f%%%s", r["venue"], r["figure"], _usd(r["ours"]),
                  r["source"], _usd(r["theirs"]), r["gap"] * 100, "  OVER" if r["over"] else "")
