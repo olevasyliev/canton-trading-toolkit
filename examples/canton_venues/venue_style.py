@@ -9,8 +9,8 @@ Only OFL fonts are embedded (``fonts/*-OFL.txt``): the venue's own family where 
 (IBM Plex Mono, Reddit Sans, Aldrich, Inter, VT323, Chakra Petch, Bebas Neue, DM Mono,
 Montserrat), never a venue's proprietary font file, logo or wordmark.
 
-It stays our card: our mark and name sit at the top, and the strip at the foot is ours in our
-own colours, naming cantonvenues.com and saying the card is independent of the venue.
+It stays our card: our mark and name sit at the top, and the foot of the card names
+cantonvenues.com and says the card is independent of the venue, on the card's own background.
 
     python venue_style.py --api ./api --out card.png --venue temple
 """
@@ -102,8 +102,6 @@ STYLES = {
     },
 }
 
-# our strip at the foot, in the dashboard's light colours (site/index.html), on every card
-OURS = {"strip": "#ffffff", "text": "#0d1421", "accent": "#3861fb", "text2": "#58667e"}
 
 
 def font(name: str, size: float):
@@ -233,18 +231,18 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
             d.text((x0 + pad, top + 98 * S), p["n"], font=_fit(d, p["n"], s["body"], 17 * S, inner, 12 * S),
                    fill=c["up"] if first else c["tile_note"], anchor="lt")
 
-    # our strip: where the data comes from, and that the card is not the venue's own material
-    o = {k: vp._hex(v) for k, v in OURS.items()}
-    d.rectangle((0, st, W, H), fill=o["strip"])
+    # our strip: where the data comes from, and that the card is not the venue's own material. It sits
+    # on the card's own background under a rule, the domain in the venue's accent
+    if "frame" not in c:  # a framed card's own frame already closes the content above
+        d.line((M, st, W - M, st), fill=c["rule"], width=S)
     sf = vp._font("SemiBold", 22 * S)
     x = M
-    for part, col in (("Live Canton DEX data from ", o["text"]), ("cantonvenues.com", o["accent"])):
-        d.text((x, st + 30 * S), part, font=sf, fill=col, anchor="lm")
+    for part, col in (("Live Canton DEX data from ", c["ink"]), ("cantonvenues.com", c["accent"])):
+        d.text((x, st + 32 * S), part, font=sf, fill=col, anchor="lm")
         x += d.textlength(part, font=sf)
-    lines, nf = vp.note_lines(d, footer_note(f, head), lambda z: vp._font("Regular", z), width, 19 * S, 17 * S,
-                              14 * S)
-    for n, line in enumerate(lines):  # two lines sit lower and closer: the strip is 86px tall
-        d.text((M, st + (57 + 18 * n if len(lines) > 1 else 62) * S), line, font=nf, fill=o["text2"], anchor="lm")
+    note = footer_note(f, head)
+    d.text((M, st + 62 * S), note, font=_fit(d, note, "Inter-Regular", 18 * S, width, 14 * S), fill=c["muted"],
+           anchor="lm")
 
     out = img.resize((1200, 630), Image.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)

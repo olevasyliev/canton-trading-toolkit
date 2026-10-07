@@ -7,6 +7,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import html
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "canton_venues"))
@@ -98,15 +100,16 @@ def test_headline_is_the_first_thing_a_venue_leads():
     assert h["rocky"]["rule"] == "perp_volume"
     # derivatives coverage is not confirmed by any outside list: scoped to what we read
     assert h["rocky"]["title"] == "The largest perps venue among the Canton venues we read"
-    # Tradecraft wins both $50K CC-pair quotes, but its first lead is its pool liquidity; its card
-    # stays plain by default ("lead": False), so the lead is kept but not drawn
+    # Tradecraft wins both $50K CC-pair quotes, but its first lead is its pool liquidity, now on its card;
+    # the runner-up is kept in code for the margin rule
     tc = f["tradecraft"]["leads"][0]
     assert tc["rule"] == "tvl" and tc["next"] == "Cantex"
-    assert h["tradecraft"]["rule"] == "pools"
+    assert h["tradecraft"]["rule"] == "tvl"
     assert h["ekiden"]["rule"] == "perp_markets" and "3 markets trading: BTC, ETH, CC" in h["ekiden"]["sub"]
-    # leads nothing: a plain count, never a superlative
+    # leads nothing: a plain count, never a superlative, and no #1 on its page
     assert h["oneswap"]["rule"] == "pools" and "most" not in h["oneswap"]["title"].lower()
-    assert vp.lead_line(f["oneswap"], h["oneswap"]) is None
+    assert "#1" not in vp.lead_html(f["oneswap"], h["oneswap"])
+    assert '<b class="up">#1</b> Largest spot venue on Canton' in vp.lead_html(f["temple"], h["temple"])
 
 
 def test_no_headline_or_card_tile_ranks_venues_on_price_across_sizes():
@@ -207,7 +210,7 @@ def test_page_carries_its_own_social_card_and_share_link(tmp_path):
     intent = next(h for h in p.links if h.startswith("https://x.com/intent/post"))
     q = parse_qs(urlparse(intent).query)
     assert q["text"][0].startswith("Where Temple (@temple_ny) leads on Canton Venues: the largest spot venue")
-    assert "Where Temple leads: the largest spot venue on Canton." in page and "Next: Cantex, $4M." in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
+    assert "Largest spot venue on Canton" in page and "Next:" not in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
     # no verified handle: the venue is named, nobody is tagged
     one = (tmp_path / "venues" / "oneswap" / "index.html").read_text()
     oq = parse_qs(urlparse(next(h for h in _links(one) if "intent/post" in h)).query)
@@ -367,14 +370,17 @@ def test_style_table_covers_every_venue_with_open_fonts(tmp_path):
         for face in {s["head"], s["label"], s["num"], s["body"], s.get("names", s["num"])}:
             assert (vp.FONTS / f"{face}.ttf").exists(), face
             assert face.split("-")[0] in licences, face
-    # every venue renders in its own style, 1200x630, with our strip at the foot
+    # every venue renders in its own style, 1200x630; our two footer lines sit on the card's own
+    # background, not on a white strip
     f = vp.facts(data())
     for slug, x in f.items():
         out = tmp_path / f"{slug}.png"
         vs.render(x, vp.headline(x), T, out)
         with Image.open(out) as im:
             assert im.size == (1200, 630)
-            assert im.convert("RGB").getpixel((1190, 620)) == vp._hex(vs.OURS["strip"])
+            s = vs.STYLES[slug]
+            px, want = im.convert("RGB").getpixel((1190, 620)), vp._hex(s.get("bg2", s["bg"]))
+            assert max(abs(x - y) for x, y in zip(px, want)) <= 3, slug  # a gradient lands within a step
 
 
 def test_our_own_look_stays_available(tmp_path):
@@ -414,7 +420,7 @@ def test_volume_is_labelled_as_the_venue_reports_it_only_when_it_reports_dollars
     pp = {p["k"]: p for p in vp.stats(f["pool-party"])}
     assert pp["Spot volume, 24h"]["n"] == "CC side at $0.1200 per CC"
     head = vp.headline(f["pool-party"])
-    assert "Volume: CC side at $0.1200 per CC." in vp.card_notes(f["pool-party"], head)
+    assert vp.card_notes(f["pool-party"], head) == "Independent data, not affiliated with Pool Party."
     method = vp.card_method(f["pool-party"], head)
     assert "24h volume: the CC side of each CC pool, converted at $0.1200 per CC." in method
     assert not any("as Pool Party reports it" in x for x in method)
@@ -493,14 +499,16 @@ def test_one_money_style_and_tokens_lead_with_non_stablecoins():
     assert vp.token_tile(f)["names"] == ["EDELx", "eXAU", "USDC.B", "USDCx"]
 
 
-def test_card_footer_names_every_kind_of_figure_on_the_card():
+def test_card_footer_is_one_short_line_and_the_method_moves_to_the_page(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
     for slug, f in vp.facts(data()).items():
         head = vp.headline(f)
-        note = vp.card_notes(f, head)
-        method = vp.card_method(f, head)
+        assert vp.card_notes(f, head) == f"Independent data, not affiliated with {f['name']}."
+        page = (tmp_path / "venues" / slug / "index.html").read_text()
         for p in vp.stats(f):
-            assert vp.metric_short(p["m"], f) in note, (slug, p["m"])
-            assert vp.metric_note(p["m"], f) in method, (slug, p["m"])
+            note = vp.metric_note(p["m"], f)
+            assert note in vp.card_method(f, head) and html.escape(note) in page, (slug, p["m"])
 
 
 # === second verifier pass (2026-10-07) ======================================
@@ -519,7 +527,6 @@ def test_token_count_names_and_footer_apply_the_1k_rule_on_this_venue():
         tile = vp.token_tile(f[slug])
         assert tile["names"] == t["names"] and tile["n"] == f"{t['n']} with $1K+ here"
         head = vp.headline(f[slug])
-        assert f"Tokens: {t['n']} with $1K+ on {f[slug]['name']}." in vp.card_notes(f[slug], head)
         assert (f"Tokens: the {t['n']} with $1K or more of liquidity on {f[slug]['name']} itself."
                 in vp.card_method(f[slug], head))
     # an order book is held to its depth within 1% of mid, not its total liquidity
@@ -559,18 +566,14 @@ def test_best_price_sub_names_what_you_receive():
     assert lead["sub"].startswith("0.87% more HANDL than the next venue we read")
 
 
-def test_tradecraft_card_is_plain_unless_its_lead_is_switched_on():
-    tc = next(v for v in vp.VENUES if v["slug"] == "tradecraft")
-    assert tc["lead"] is False
+def test_a_venue_can_still_be_set_to_a_plain_card():
+    assert all(v.get("lead", True) for v in vp.VENUES)  # every venue shows its lead today
     f = vp.facts(data())["tradecraft"]
-    h = vp.headline(f)
+    h = vp.headline({**f, "venue": {**f["venue"], "lead": False}})
     assert h["rule"] == "pools" and h["title"] == "Tradecraft, priced live on Canton"
-    assert vp.lead_line(f, h) is None and "most" not in vp.share_text(f, h).lower()
+    assert "#1" not in vp.lead_html(f, h) and "most" not in vp.share_text(f, h).lower()
     tiles = [p["k"] for p in vp.stats(f)]
     assert not any("1% of mid" in k for k in tiles) and "Largest pool" in tiles
-    assert "Within 1% of mid" not in vp.card_notes(f, h) and "Depth:" not in vp.card_notes(f, h)
-    # the override restores the lead
-    assert vp.headline({**f, "venue": {**f["venue"], "lead": True}})["rule"] == f["leads"][0]["rule"]
 
 
 # === third pass: price leads need a known fee and $1K (2026-10-07) ===========
@@ -618,3 +621,152 @@ def test_every_card_footer_fits_two_readable_lines():
         note = vp.card_notes(f, vp.headline(f))
         lines, font = vp.note_lines(d, note, lambda z: vp._font("Regular", z), (1200 - 112) * S, 19 * S, 17 * S, 14 * S)
         assert len(lines) <= 2 and font.size >= 14 * S and not any("…" in x for x in lines), (slug, note)
+
+
+# === second design pass (2026-10-07) ==========================================
+
+import re  # noqa: E402
+
+import venue_history as vh  # noqa: E402
+
+
+def _main_text(page: str) -> str:
+    """The venue's own content: between the header (whose menu lists every venue) and the footer."""
+    body = page.split("<main", 1)[1].split('<footer class="foot">', 1)[0]
+    p = _Text()
+    p.feed(body)
+    return " ".join(p.parts)
+
+
+def test_no_competitor_is_named_in_a_venues_public_text(tmp_path):
+    pytest.importorskip("PIL")
+    d = data()
+    vp.build(tmp_path, d, T)
+    names = {v["slug"]: v["name"] for v in vp.VENUES}
+    for slug, f in vp.facts(d).items():
+        head = vp.headline(f)
+        page = (tmp_path / "venues" / slug / "index.html").read_text()
+        meta = _Meta()
+        meta.feed(page)
+        texts = [_main_text(page), meta.title, *meta.meta.values(), vp.share_text(f, head), head["title"],
+                 head["sub"], vs.footer_note(f, head), vp.lead_html(f, head)]
+        texts += [x for p in vp.stats(f) for x in (p["k"], p["v"], p["n"])]
+        others = [n for s, n in names.items() if s != slug]
+        for text in filter(None, texts):
+            assert not any(re.search(rf"\b{re.escape(n)}\b", text) for n in others), (slug, text[:200])
+        # the runner-up is still known to the code, for the margin rule and the log
+        for lead in f["leads"]:
+            if lead["rule"] != "unique_token":
+                assert lead["next"] in names.values() and lead["margin"] is not None
+
+
+def _pool(v, pair, tvl, vol=0.0, apr=None):
+    return {"venue": v, "pair": pair, "tvl_usd": tvl, "volume_24h_usd": vol, "fee": 0.003, "fee_apr": apr}
+
+
+def test_wider_categories_give_each_venue_a_true_lead():
+    d = data()
+    d["lp"]["pools"] += [_pool("poolparty", "CC/EDELx", 90_000, vol=50_000, apr=0.4),
+                         _pool("cantex", "CC/EDELx", 300_000, vol=40_000, apr=0.1),
+                         _pool("oneswap", "CC/HECTO", 60_000)]
+    d["tokens"]["tokens"] += [
+        {"symbol": "HECTO", "key": "HECTO", "venues": {"oneswap": {"liquidity_usd": 60_000}}},
+        {"symbol": "SBC", "key": "SBC", "venues": {"tradecraft": {"liquidity_usd": 134_000},
+                                                   "cantex": {"liquidity_usd": 4}}},
+        {"symbol": "MOD", "key": "MOD", "venues": {"cantex": {"liquidity_usd": 20_000},
+                                                   "poolparty": {"liquidity_usd": None}}}]
+    f = vp.facts(d)
+
+    def rules(slug):
+        return {x["rule"]: x for x in f[slug]["leads"]}
+
+    # the most traded CC/EDELx pool (+25%) and the best fee APR on it: Pool Party now leads something
+    pp = rules("pool-party")
+    assert pp["pair_volume"]["title"] == "The most traded CC/EDELx pool among the Canton venues we read"
+    assert pp["pair_volume"]["margin"] == pytest.approx(0.25)
+    assert pp["pair_apr"]["big"] == "40.0%" and pp["pair_apr"]["next"] == "Cantex"
+    assert vp.headline(f["pool-party"])["rule"] == "pair_volume"
+    # the only venue with a token: no other venue lists HECTO at all
+    assert rules("oneswap")["unique_token"]["title"] == "The only HECTO pool among the Canton venues we read"
+    # another venue lists SBC, but under $1K: the claim says so
+    tc = rules("tradecraft")["unique_token"]
+    assert tc["title"] == "The only SBC pool with $1K or more among the Canton venues we read"
+    assert tc["next"] is None and tc["margin"] is None
+    # an unmeasured market elsewhere is not thin: no "only MOD" claim
+    assert "unique_token" not in rules("cantex") or "MOD" not in rules("cantex")["unique_token"]["title"]
+    # pools under $1K never count, either way
+    d["lp"]["pools"][-3]["tvl_usd"] = 900
+    assert "pair_volume" not in {x["rule"] for x in vp.facts(d)["pool-party"]["leads"]}
+
+
+def test_a_pair_pool_outranks_a_thin_depth_lead():
+    """Tradecraft's $1.2M CC/USDCx pool leads its card, not the dollars within 1% of its mid."""
+    d = data()
+    d["lp"]["pools"].append(_pool("cantex", "CC/EDELx", 750_000))  # pool totals level: no "most liquidity" lead
+    leads = [x["rule"] for x in vp.facts(d)["tradecraft"]["leads"]]
+    assert leads.index("pool_tvl") < leads.index("token_depth")
+    assert list(vp.CATEGORIES).index("pool_tvl") < list(vp.CATEGORIES).index("token_depth")
+
+
+def test_the_venues_menu_is_the_same_on_the_dashboard_and_every_page(tmp_path):
+    pytest.importorskip("PIL")
+    dash = (Path(vp.HERE) / "site" / "index.html").read_text()
+    assert vp.nav_venues("/") in dash
+    vp.build(tmp_path, data(), T)
+    for slug in ("temple", "oneswap"):
+        page = (tmp_path / "venues" / slug / "index.html").read_text()
+        assert vp.nav_venues("/") in page
+    links = re.findall(r'href="(/venues/[^"]*)"', vp.nav_venues("/"))
+    assert links == ["/venues/"] + [f"/venues/{v['slug']}/" for v in vp.VENUES]
+    # the dashboard's venue table: plain links in the text colour, no per-venue colour
+    assert 'class="plain" href="venues/${VP[x.id]}/"' in dash and '"color:" + VC[x.id]' not in dash
+
+
+def test_venues_index_is_a_table_without_thumbnails(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
+    idx = (tmp_path / "venues" / "index.html").read_text()
+    assert '<table class="vt">' in idx and "card.png" not in idx.split("<main", 1)[1]
+    rows = re.findall(r'<tr class="click" data-href="([^"]+)"', idx)
+    assert rows[0] == "temple/" and len(rows) == 7  # by 24h volume
+    assert '<b class="up">#1</b> Largest spot venue on Canton' in idx
+
+
+def test_best_price_table_reads_per_token_and_size(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
+    page = (tmp_path / "venues" / "temple" / "index.html").read_text()
+    sec = page.split("Where Temple is the best price", 1)[1].split("</section>", 1)[0]
+    assert "Buy CBTC with dollars" in sec and "Sell CBTC for dollars" in sec
+    assert sec.count('<span class="best">Best</span>') == 4 + 1  # four sizes won, plus the legend
+    text = _Text()
+    text.feed(sec)
+    assert not re.search(r"\d of \d", " ".join(text.parts))  # no "2 of 6" tallies
+
+
+def test_venue_history_series():
+    dex = {"totalDataChartBreakdown": [[T - 86400, {"Temple": 30.0, "Cantex": 10.0}],
+                                       [T, {"Temple": 20.0, "Cantex": 20.0, "Other": 10.0}]]}
+    per, total = vh.llama_daily(dex, T)
+    assert per["temple"] == [[T - 86400, 30.0], [T, 20.0]] and total[-1] == [T, 50.0]
+    day = 1791331200  # 2026-10-07 00:00 UTC
+    hours = [(day - 3600 * 3 + 3600 * k, 1.0) for k in range(20)]  # 21:00 the day before to 16:00
+    assert vh.hourly_to_days([hours]) == []  # neither day is complete
+    full = [(day + 3600 * k, 2.0) for k in range(24)]
+    assert vh.hourly_to_days([full, full]) == [[day, 96.0]]
+    st = {}
+    assert vh.record_hourly(st, T, {"cantex": {"tvl": 5.0, "spot_volume": 1.0}})
+    assert not vh.record_hourly(st, T + 600, {"cantex": {"tvl": 6.0}})  # within the hour
+    assert vh.record_hourly(st, T + 3600, {"cantex": {"tvl": 6.0}, "ekiden": {"open_interest": 2.0}})
+    c = st["hourly"]["venues"]
+    assert c["cantex"]["tvl"] == [5.0, 6.0] and c["cantex"]["spot_volume"] == [1.0, None]
+    assert c["ekiden"]["open_interest"] == [None, 2.0]
+    # the page labels a series with its source and start, and says so when it has one point
+    f = vp.facts({**data(), "history": {"daily": {"temple": {"source": "defillama", "points": per["temple"]}},
+                                        "daily_total": total, "hourly": st["hourly"]}})
+    titles = [(s["title"], s["sub"]) for s in f["temple"]["series"]]
+    assert titles[0][0] == "Volume by day" and "DefiLlama" in titles[0][1] and "since 6 Oct 2026" in titles[0][1]
+    assert f["temple"]["series"][1]["pts"][-1][1] == pytest.approx(0.4)
+    one = next(s for s in vp.facts({**data(), "history": {"hourly": {"t": [T], "venues": {"oneswap": {"tvl": [1.0]}}}}})
+               ["oneswap"]["series"] if s["kind"] == "tvl")
+    assert one["empty"].startswith("Recording since 7 Oct 2026")

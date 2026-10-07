@@ -11,8 +11,8 @@ Every number comes from the collected data. The card's headline is the venue's
 one lead, picked by a fixed rule (``leads``): the first thing it is #1 at by at
 least ``LEAD_MARGIN`` over the runner-up, in a set order, after markets under
 ``MIN_LIQUIDITY_USD`` are set aside. A venue that leads nothing gets a plain
-count instead. Nothing is written about another venue beyond its place in a
-ranking. Each category carries its scope (``CATEGORIES``): "on Canton" only
+count instead. A venue's page, card and share text never name another venue: the
+runner-up is kept in code and the log, for the margin rule only. Each category carries its scope (``CATEGORIES``): "on Canton" only
 where an outside list confirms the ranking covers the chain, otherwise "among
 the Canton venues we read".
 """
@@ -47,11 +47,11 @@ VENUES = [
      "x": "cantex_io", "x_source": "https://www.cantex.io"},
     {"slug": "rocky", "name": "Rocky", "rows": ["rocky", "rocky_perp"], "site": "https://rocky.exchange",
      "x": "Rocky_exchange", "x_source": "https://rocky.exchange"},
-    # "lead": False draws the plain card (name, pools, tokens, volume) even when the venue leads a
-    # ranking; its leads are still computed and logged. Tradecraft: founder decision pending, plain
-    # by default (2026-10-07); set True to put its lead (the deepest CC/USDCx pool) back on the card.
+    # "lead": False would draw the plain card (name, pools, tokens, volume) even when the venue leads
+    # a ranking; its leads are still computed and logged. Tradecraft's lead (its CC/USDCx pool) is on
+    # since 2026-10-07: the founder asked for every venue's real strength on its page.
     {"slug": "tradecraft", "name": "Tradecraft", "rows": ["tradecraft"], "site": "https://tradecraft.fi",
-     "x": "TradecraftFi", "x_source": "https://tradecraft.fi", "lead": False},
+     "x": "TradecraftFi", "x_source": "https://tradecraft.fi"},
     {"slug": "ekiden", "name": "Ekiden", "rows": ["ekiden"], "site": "https://ekiden.fi",
      "x": "ekidenfi", "x_source": "https://ekiden.fi"},
     # neither site nor docs link an X account: the share text names the venue without a tag
@@ -135,8 +135,11 @@ CATEGORIES = {
     "tokens": {"scope": "read", "source": None},
     "pool_count": {"scope": "read", "source": None},
     "perp_markets": {"scope": "read", "source": None},  # derivatives coverage unverified
-    "token_depth": {"scope": "read", "source": None},
     "pool_tvl": {"scope": "read", "source": None},
+    "token_depth": {"scope": "read", "source": None},
+    "unique_token": {"scope": "read", "source": None},
+    "pair_volume": {"scope": "read", "source": None},
+    "pair_apr": {"scope": "read", "source": None},
     "best_quote": {"scope": "read", "source": None},
 }
 STABLES = model.STABLES
@@ -366,6 +369,7 @@ def facts(data: dict) -> dict[str, dict]:
     wins: dict[tuple, dict] = {}
     quoted: dict[tuple, dict] = {}
     won_rows: dict[str, list] = {}
+    quote_rows: dict[str, list] = {}
     for p in pairs:
         key = p.get("token") or p["key"]
         markets = {v: b["market"] for v, b in (p.get("books") or {}).items()}
@@ -380,6 +384,11 @@ def facts(data: dict) -> dict[str, dict]:
                 quoted[k][v] += 1
             ranked = sorted(outs, key=outs.get, reverse=True)
             best, second = ranked[0], ranked[1]
+            # every counted quote, per venue: whether it was the best one (a tie is nobody's)
+            for v in outs:
+                quote_rows.setdefault(v, []).append(
+                    {"symbol": p["symbol"], "key": key, "kind": p["kind"], "side": r["side"],
+                     "size": r["size_usd"], "best": v == best and outs[best] != outs[second]})
             if outs[best] == outs[second]:
                 continue
             wins.setdefault(k, {}).setdefault(best, 0)
@@ -465,8 +474,10 @@ def facts(data: dict) -> dict[str, dict]:
         f["exec"] = {f"{s}:{z}": {"won": wins.get((s, z), {}).get(i, 0), "of": quoted[(s, z)].get(i, 0)}
                      for (s, z) in sorted(quoted) if quoted[(s, z)].get(i)}
         f["won_rows"] = won_rows.get(i, [])
+        f["quotes"] = quote_rows.get(i, [])
         f["leads"] = _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol.get(main["kind"], {}),
                             perp_vol, tvl, tok_count, pool_count, live_mkts, tokens, pools)
+        f["series"] = venue_series(v["slug"], f, data.get("history") or {})
         f["near"] = _near(f, i, perp_id, spot_vol, kind_vol.get(main["kind"], {}), perp_vol, tvl,
                           tok_count, pool_count, live_mkts, name_of)
         out[v["slug"]] = f
@@ -560,40 +571,51 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
             return "canton"
         return "read"
 
-    def add(rule, title, sub, r, value, fmt=short_money, scope="read"):
+    def add(rule, title, sub, r, value, fmt=short_money, scope="read", big=None, cap=None):
+        """``big`` is the figure the page shows large and ``cap`` the line under it; ``next`` and
+        ``margin`` stay in code and logs only, never in anything we publish."""
         nxt, nval, margin = r
         out.append({"rule": rule, "title": title, "sub": sub, "next": name_of.get(nxt, nxt),
-                     "next_value": nval, "next_text": fmt(nval), "margin": margin, "value": value,
-                     "scope": scope, "source": CATEGORIES[rule]["source"] if scope == "canton" else None})
+                     "next_value": nval, "next_text": "" if nval is None else fmt(nval), "margin": margin,
+                     "value": value, "scope": scope,
+                     "source": CATEGORIES[rule]["source"] if scope == "canton" else None,
+                     "short": _short(title), "big": big if big is not None else short_money(value),
+                     "cap": cap if cap is not None else sub})
 
     if f.get("spot_volume") and (r := _lead(spot_vol, i)):
         sc = where("spot_volume", i)
         share = f" ({round(f['spot_share'] * 100)}% of the spot volume we read)" if f.get("spot_share") else ""
+        cap = "Traded in the last 24 hours" + (f", {round(f['spot_share'] * 100)}% of the spot volume we read"
+                                               if f.get("spot_share") else "")
         add("spot_volume", f"The largest spot venue {WHERE[sc]}",
-            f"{short_money(f['spot_volume'])} traded in the last 24 hours{share}", r, f["spot_volume"], scope=sc)
+            f"{short_money(f['spot_volume'])} traded in the last 24 hours{share}", r, f["spot_volume"], scope=sc,
+            cap=cap)
     if f.get("spot_volume") and (r := _lead(kind_vol, i)):
         sc = where("kind_volume", i)
         title = (f"The largest {f['kind_label']} on Canton by volume" if sc == "canton"
                  else f"The largest {f['kind_label']} by volume {WHERE[sc]}")
         add("kind_volume", title, f"{short_money(f['spot_volume'])} traded in the last 24 hours", r,
-            f["spot_volume"], scope=sc)
+            f["spot_volume"], scope=sc, cap="Traded in the last 24 hours")
     if perp_id and (r := _lead(perp_vol, perp_id)):
         add("perp_volume", f"The largest perps venue {WHERE['read']}",
-            f"{short_money(f['perp_volume'])} of perpetuals traded in the last 24 hours", r, f["perp_volume"])
+            f"{short_money(f['perp_volume'])} of perpetuals traded in the last 24 hours", r, f["perp_volume"],
+            cap="Perpetuals traded in the last 24 hours")
     if r := _lead(tvl, i):
         add("tvl", f"The most pool liquidity {WHERE['read']}", f"{short_money(tvl[i])} across {pools_text(f)}", r,
-            tvl[i])
+            tvl[i], cap=f"In {pools_text(f)}")
     if r := _lead(tok_count, i):
         add("tokens", f"The most tokens {WHERE['read']}", f"{tok_count[i]} tokens priced live", r, tok_count[i],
-            fmt=lambda n: f"{n} tokens")
+            fmt=lambda n: f"{n} tokens", big=str(tok_count[i]), cap="Tokens priced live with $1K or more")
     if r := _lead(pool_count, i):
         add("pool_count", f"The most CC pools {WHERE['read']}", f"{pool_count[i]} pools with $1K or more in them",
-            r, pool_count[i], fmt=lambda n: f"{n} pools")
+            r, pool_count[i], fmt=lambda n: f"{n} pools", big=str(pool_count[i]),
+            cap="CC pools with $1K or more in them")
     if perp_id and (r := _lead({k: len(x) for k, x in live_mkts.items()}, perp_id)):
         ms = live_mkts[perp_id]
         add("perp_markets", f"The most perp markets {WHERE['read']}",
             f"{len(ms)} markets trading: {', '.join(m['base'] for m in ms)}", r, len(ms),
-            fmt=lambda n: f"{n} markets")
+            fmt=lambda n: f"{n} markets", big=str(len(ms)),
+            cap=f"Markets trading now: {', '.join(m['base'] for m in ms)}")
     # one token: the deepest market within 1% of mid, among markets that are not thin. A book read
     # with our own key is not something anyone else can check, so it never leads.
     best_tok = None
@@ -607,19 +629,57 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
             best_tok = (t["symbol"], depth[i], "book" if here.get("market") else "pool", r)
     if best_tok:
         sym, d, what, r = best_tok
-        add("token_depth", f"The deepest {sym} {what} {WHERE['read']}", f"{short_money(d)} within 1% of mid", r, d)
+        add("token_depth", f"The deepest {sym} {what} {WHERE['read']}", f"{short_money(d)} within 1% of mid", r, d,
+            cap=f"Within 1% of mid in its {sym} {what}")
     # one pool pair: the largest pool for it
-    best_pool = None
-    by_pair: dict[str, dict] = {}
-    for p in pools:
-        if p["tvl_usd"] >= MIN_LIQUIDITY_USD:
-            by_pair.setdefault(p["pair"], {})[p["venue"]] = p["tvl_usd"]
-    for pair, vals in by_pair.items():
-        if (r := _lead(vals, i)) and (best_pool is None or vals[i] > best_pool[1]):
-            best_pool = (pair, vals[i], r)
-    if best_pool:
-        pair, v, r = best_pool
-        add("pool_tvl", f"The largest {pair} pool {WHERE['read']}", f"{short_money(v)} in liquidity", r, v)
+    live_pools = [p for p in pools if p["tvl_usd"] >= MIN_LIQUIDITY_USD]
+
+    def best_pair(field):
+        best = None
+        by_pair: dict[str, dict] = {}
+        for p in live_pools:
+            if p.get(field) is not None:
+                by_pair.setdefault(p["pair"], {})[p["venue"]] = p[field]
+        for pair, vals in by_pair.items():
+            if (r := _lead(vals, i)) and (best is None or vals[i] > best[1]):
+                best = (pair, vals[i], r)
+        return best
+
+    if b := best_pair("tvl_usd"):
+        pair, v, r = b
+        add("pool_tvl", f"The largest {pair} pool {WHERE['read']}", f"{short_money(v)} in liquidity", r, v,
+            cap=f"In its {pair} pool")
+    # one token no other venue we read carries at $1K or more. A market we cannot measure is not thin,
+    # so it blocks the claim; a book read with our own key never leads.
+    only = None
+    for t in tokens:
+        here = t["venues"].get(i)
+        if not here or (f.get("keyed") and here.get("market")):
+            continue
+        liq = token_liquidity(here) or 0
+        others = [x for v, x in t["venues"].items() if v != i]
+        if liq < MIN_LIQUIDITY_USD or any((token_liquidity(x) is None or token_liquidity(x) >= MIN_LIQUIDITY_USD)
+                                          for x in others):
+            continue
+        if only is None or liq > only[1]:
+            only = (t["symbol"], liq, bool(others), "book" if here.get("market") else "pool")
+    if only:
+        sym, liq, thin_elsewhere, what = only
+        floor = " with $1K or more" if thin_elsewhere else ""
+        unit = "within 1% of mid" if what == "book" else "in liquidity"
+        add("unique_token", f"The only {sym} {what}{floor} {WHERE['read']}", f"{short_money(liq)} {unit}",
+            (None, None, None), liq, cap=f"In its {sym} {what}" if what == "pool" else f"Within 1% of mid, {sym}")
+    # one pool pair: the most traded, and the best fee income to its liquidity providers
+    if b := best_pair("volume_24h_usd"):
+        pair, v, r = b
+        add("pair_volume", f"The most traded {pair} pool {WHERE['read']}", f"{short_money(v)} traded in 24 hours",
+            r, v, cap=f"{pair} traded in the last 24 hours")
+    if b := best_pair("fee_apr"):
+        pair, v, r = b
+        add("pair_apr", f"The highest {pair} LP fee APR {WHERE['read']}",
+            f"{v * 100:.1f}% a year from the last 24 hours of fees", r, v,
+            fmt=lambda x: f"{x * 100:.1f}%", big=f"{v * 100:.1f}%",
+            cap="Fee APR: the last 24 hours of LP fees over liquidity, annualised")
     # one quote: a single direction and size it still wins clearly once each venue's known network
     # fee is taken off, the largest size first
     clear = [w for w in f.get("won_rows", [])
@@ -629,8 +689,24 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
         w = max(clear, key=lambda x: (x["size"], x["net_edge_bps"]))
         add("best_quote", f"Best price to {_direction(w)} at {SIZE_LABEL.get(w['size'], money(w['size']))}",
             best_quote_sub(w),
-            (w["next"], w["net_edge_bps"], w["net_edge_bps"] / 10_000), w["edge_bps"], fmt=lambda b: "")
-    return out
+            (w["next"], w["net_edge_bps"], w["net_edge_bps"] / 10_000), w["edge_bps"], fmt=lambda b: "",
+            big=f"+{w['edge_bps'] / 100:.2f}%",
+            cap=(f"More {received(w)} back than the next venue we read, pool fees and price impact included, "
+                 "network fees excluded"))
+    order = list(CATEGORIES)
+    return sorted(out, key=lambda x: order.index(x["rule"]))
+
+
+def _short(title: str) -> str:
+    """"The largest spot venue on Canton" -> "Largest spot venue on Canton": the page's #1 line."""
+    t = title[4:] if title.startswith("The ") else title
+    return t[:1].upper() + t[1:]
+
+
+def tag(title: str) -> str:
+    """The lead for the venues table: "on Canton" stays, "among the Canton venues we read" goes to
+    the note under the table."""
+    return _short(title.replace(f" {WHERE['read']}", ""))
 
 
 def token_liquidity(x: dict) -> float | None:
@@ -675,20 +751,27 @@ def headline(f: dict) -> dict:
         n, priced = f["pool_n"], f["pool_priced"]
         tail = f", {priced} priced" if priced < n else ""
         return {"rule": "pools", "title": f"{f['name']}, priced live on Canton",
-                "sub": f"{n} CC pools, {short_money(f['tvl'])} in liquidity{tail}", "value": f["tvl"]}
+                "sub": f"{n} CC pools, {short_money(f['tvl'])} in liquidity{tail}", "value": f["tvl"],
+                "big": short_money(f["tvl"]), "cap": f"In liquidity across {pools_text(f)}"}
     if f.get("tokens"):
+        n = token_facts(f)["n"]
         return {"rule": "read", "title": f"{f['name']}, priced live on Canton",
-                "sub": f"{token_facts(f)['n']} tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity",
-                "value": None}
+                "sub": f"{n} tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity",
+                "value": None, "big": str(n), "cap": f"Tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity"}
     return {"rule": "read", "title": f"{f['name']}, read live", "sub": f["kind"], "value": None}
 
 
-def lead_line(f: dict, head: dict) -> str | None:
-    """"Where Temple leads: the largest spot venue on Canton, $34.1M ... (next: Rocky, $2.8M)"."""
+def lead_html(f: dict, head: dict) -> str:
+    """The page's lead: the figure large, a green #1 and the one line it leads at, a caption under it.
+    No runner-up: we never name another venue in a venue's own public text."""
+    big = head.get("big")
     if head["rule"] in PLAIN:
-        return None
-    nxt = f"{head['next']}, {head['next_text']}" if head["next_text"] else head["next"]
-    return f"Where {f['name']} leads: {_lower_first(head['title'])}. {head['sub']}. Next: {nxt}."
+        line = ""
+    else:
+        line = f'<span class="vwin"><b class="up">#1</b> {e(head.get("short") or _short(head["title"]))}</span>'
+    fig = f'<span class="vbig num">{e(big)}</span>' if big else ""
+    cap = f'<p class="vcap">{e(head["cap"])}.</p>' if head.get("cap") else ""
+    return f'<div class="vfig">{fig}{line}</div>{cap}' if (fig or line) else cap
 
 
 def names_text(names: list[str], shown: int = 4) -> str:
@@ -809,6 +892,9 @@ METHOD = {
     "perp_markets": "Perp markets with $1K or more traded in 24h, from each venue's public API.",
     "token_depth": "Dollars within 1% of mid; markets under $1K set aside.",
     "pool_tvl": "Pool liquidity from live reserves; pools under $1K set aside.",
+    "unique_token": "No other venue we read has this token at $1K or more of liquidity.",
+    "pair_volume": "Each pool's 24h volume; pools under $1K set aside.",
+    "pair_apr": "Fee APR: the last 24 hours of LP fees over liquidity, annualised; pools under $1K set aside.",
     "best_quote": ("Best price: same amount on every venue, pool fees and price impact included, network fees "
                    "excluded. A venue leads on price only at $1K or more, only when its own per-swap network "
                    "fee is documented or measured, and only when the edge survives that fee at the top of its "
@@ -818,27 +904,6 @@ METHOD = {
 }
 # the "on Canton" version of a ranking line: the outside list it was checked against
 METHOD_CANTON = "Ranked {what} among the venues we read and checked against DefiLlama's Canton DEX list."
-
-
-METHOD_SHORT = {"best_quote": "Best price after known network fees, $1K and up.", "pools": "", "read": ""}
-METHOD_SHORT_CANTON = "Ranked among the venues we read, checked against DefiLlama."
-RANKED_SHORT = "Ranked among the venues we read."
-
-
-def metric_short(m: str, f: dict) -> str:
-    """The card footer's few words for one kind of figure; ``metric_note`` is the page's sentence."""
-    if m == "spot_volume":
-        basis, at = VOLUME_BASIS.get(f["id"]), price(f.get("cc_usd"))
-        return {"usd": "Volume as reported.", "cc": f"Volume: CC at {at} per CC.", "cc_leg": f"Volume: CC side at {at} per CC.",
-                "quote": "Volume: quote-token turnover."}.get(basis, "Volume converted by us.")
-    if m == "tokens":
-        return token_facts(f)["short"]
-    if m == "perp_volume":
-        quotes = ", ".join(sorted({x["quote"] for x in f.get("perp_markets") or []})) or "quote-token"
-        return f"Perps: {quotes} turnover at $1."
-    return {"tvl": "Pools: 2x CC reserve.", "share": "Share of the spot volume we read.",
-            "depth": "Depth: within 1% of mid.", "oi": "Open interest at mark.",
-            "perp_markets": "Trading: $1K+ in 24h.", "fee": "Fee per swap, before network fees."}.get(m, "")
 
 
 def metric_note(m: str, f: dict) -> str:
@@ -861,20 +926,9 @@ def metric_note(m: str, f: dict) -> str:
 
 
 def card_notes(f: dict, head: dict) -> str:
-    """The card footer, short enough for two readable lines: who we are not, how the headline was
-    ranked, and every figure kind shown, in a few words each. The full sentences are on the page
-    (``card_method``)."""
-    rule = head["rule"]
-    if head.get("scope") == "canton":
-        lead = METHOD_SHORT_CANTON
-    else:
-        lead = METHOD_SHORT.get(rule, RANKED_SHORT)
-    parts = [f"Independent data, not affiliated with {f['name']}.", lead]
-    for p in stats(f):
-        note = metric_short(p.get("m", ""), f)
-        if note and note not in parts:
-            parts.append(note)
-    return " ".join(x for x in parts if x)
+    """The card footer's second line: one short sentence. How each figure is read is on the page
+    (``card_method``), not on the card."""
+    return f"Independent data, not affiliated with {f['name']}."
 
 
 def card_method(f: dict, head: dict) -> list[str]:
@@ -1116,25 +1170,42 @@ def render_card_ours(f: dict, head: dict, t: int, path: Path, theme: str = "ligh
 
 # === pages =================================================================
 
-def _site_parts() -> tuple[str, str, str]:
-    """The dashboard's own stylesheet, logo mark and theme icons, so a venue page looks like the site."""
+def _site_parts() -> tuple[str, str, str, str]:
+    """The dashboard's own stylesheet, logo mark, theme icons and chart code, so a venue page looks
+    and draws like the site."""
     src = (HERE / "site" / "index.html").read_text()
     style = re.search(r"<style>(.*?)</style>", src, re.DOTALL).group(1)
     logo = re.search(r'<a class="logo" href="#">\s*(<svg.*?</svg>)', src, re.DOTALL).group(1)
     icons = "\n".join(re.findall(r"^const (?:SUN|MOON) = .*$", src, re.MULTILINE))
-    return style, logo, icons
+    chart = "\n".join(re.search(rf"^function {name}\(.*?^}}$", src, re.DOTALL | re.MULTILINE).group(0)
+                      for name in ("money", "lineChart"))
+    return style, logo, icons, chart.replace(" · ", ", ")
+
+
+def nav_venues(prefix: str = "/") -> str:
+    """The "Venues" menu: every venue page and the index. The dashboard carries the same block,
+    written out in site/index.html (a test keeps the two equal)."""
+    links = "".join(f'<a href="{prefix}venues/{v["slug"]}/">{e(v["name"])}</a>' for v in VENUES)
+    return (f'<div class="dd" id="ddvenues"><button class="ddb" type="button" aria-expanded="false" '
+            f'aria-controls="ddmenu">Venues<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" '
+            f'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'
+            f'</svg></button><div class="ddm" id="ddmenu"><a class="all" href="{prefix}venues/">All venues</a>'
+            f'{links}</div></div>')
 
 
 PAGE_CSS = """
 .crumbs { margin: 20px 0 6px; font-size: 13px; color: var(--text-2); font-weight: 500; }
 .crumbs a { font-weight: 600; }
-.vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 4px; }
+.vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 10px; }
 .vhead h1 { font-size: 28px; margin: 0; letter-spacing: -0.01em; }
-.vlead { color: var(--text-2); margin: 4px 0 18px; font-size: 15px; max-width: 80ch; }
-.vlead b { color: var(--text); }
-.vleads { display: inline-block; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--accent); background: var(--bg-2); color: var(--text); font-weight: 600; }
+.vhead .vchip { font-size: 12px; }
+.vfig { display: flex; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; }
+.vbig { font-size: 34px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+.vwin { font-size: 16px; font-weight: 600; color: var(--text); }
+.vwin b { margin-right: 4px; }
+.vcap { color: var(--text-2); margin: 2px 0 18px; font-size: 14px; }
 .vtop { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.vcard { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; border-radius: 16px; border: 1px solid var(--line-2); background: var(--bg); box-shadow: var(--shadow); }
+.vcard { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; border-radius: 12px; background: var(--bg); }
 .acts { display: grid; gap: 10px; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; padding: 11px 16px; font-weight: 600; font-size: 14px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); }
 .btn:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
@@ -1142,18 +1213,24 @@ PAGE_CSS = """
 .btn.x:hover { color: var(--bg); filter: brightness(1.15); }
 .btn svg { width: 16px; height: 16px; }
 .acts .muted { line-height: 1.5; }
-.won { display: inline-block; min-width: 2.2em; font-weight: 700; color: var(--up); }
-.vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-.vtile { display: block; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--card); box-shadow: var(--shadow); color: var(--text); }
-.vtile:hover { text-decoration: none; border-color: var(--accent); }
-.vtile img { display: block; width: 100%; height: auto; aspect-ratio: 1200 / 630; background: var(--bg); border-bottom: 1px solid var(--line); }
-.vtile div { padding: 12px 16px 14px; }
-.vtile b { font-size: 16px; }
-.vtile p { margin: 2px 0 0; color: var(--text-2); font-size: 13px; }
+.best { color: var(--up); font-weight: 700; }
+table.bp td.l { white-space: nowrap; }
+table.bp th, table.bp td { width: 14%; }
+table.bp th.l, table.bp td.l { width: auto; }
+.bpmore summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 13px; margin-top: 12px; }
+.bpmore table thead { visibility: collapse; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.charts .tchart .empty { margin: 0; }
+table.vt td.lead { white-space: normal; min-width: 14em; }
+table.vt .tagline { display: none; color: var(--text-2); font-size: 12px; font-weight: 500; margin-top: 2px; white-space: normal; }
 ul.notes { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
 ul.notes li { margin: 3px 0; }
-@media (max-width: 900px) { .vtop { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .vtop, .charts { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vbig { font-size: 30px; }
+  table.vt .tagline { display: block; }
+}
 """
 
 X_ICON = ('<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.8 3h3.1l-6.8 7.8'
@@ -1162,9 +1239,30 @@ X_ICON = ('<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path
 
 e = html.escape
 
+# the Venues menu, the theme switch and the burger: the same behaviour as the dashboard's
+NAV_JS = """
+(function () {
+  var b = document.getElementById("theme"), h = document.querySelector(".head"), m = document.getElementById("burger");
+  var dd = document.getElementById("ddvenues"), ddb = dd.querySelector(".ddb");
+  function label() { var d = document.documentElement.getAttribute("data-theme") === "dark"; b.innerHTML = (d ? SUN : MOON) + (d ? "<span>Light</span>" : "<span>Dark</span>"); }
+  label();
+  b.addEventListener("click", function () {
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("venues-theme", next); } catch (e) {}
+    label();
+    if (window.charts) window.charts();
+  });
+  m.addEventListener("click", function () { var o = h.classList.toggle("open"); m.setAttribute("aria-expanded", o ? "true" : "false"); });
+  ddb.addEventListener("click", function (ev) { ev.stopPropagation(); var o = dd.classList.toggle("open"); ddb.setAttribute("aria-expanded", o ? "true" : "false"); });
+  document.addEventListener("click", function (ev) { if (!dd.contains(ev.target)) { dd.classList.remove("open"); ddb.setAttribute("aria-expanded", "false"); } });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") { dd.classList.remove("open"); ddb.setAttribute("aria-expanded", "false"); } });
+})();
+"""
 
-def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, t: int) -> str:
-    style, logo, icons = _site_parts()
+
+def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, t: int, script: str = "") -> str:
+    style, logo, icons, _ = _site_parts()
     og_img = (f'<meta property="og:image" content="{e(image)}">\n'
               '<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">\n'
               f'<meta name="twitter:image" content="{e(image)}">\n') if image else ""
@@ -1205,7 +1303,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
   <div class="wrap">
     <a class="logo" href="/">{logo} Canton Venues</a>
     <nav class="nav" id="nav" aria-label="Sections">
-      <a href="/">Dashboard</a><a href="/venues/">Venues</a><a href="/#tokens">Tokens</a><a href="/#execution">Execution</a><a href="/#perps">Perps</a><a href="/#api">API &amp; MCP</a><a href="/#contact">Contact</a>
+      <a href="/">Dashboard</a>{nav_venues()}<a href="/#tokens">Tokens</a><a href="/#execution">Execution</a><a href="/#perps">Perps</a><a href="/#api">API &amp; MCP</a><a href="/#contact">Contact</a>
     </nav>
     <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
@@ -1217,23 +1315,13 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a>, <a href="/#contact">contact</a></p><p>Updated {e(stamp(t))}.</p></div>
     <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees and price impact included, network fees excluded. Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how.</p></div>
-    <div><h4>Data</h4><p>Every number on this page is in the open JSON API: <a href="/api/v1/venues.json">venues</a>, <a href="/api/v1/execution.json">execution</a>, <a href="/api/v1/tokens.json">tokens</a>, <a href="/api/v1/lp.json">pools</a>, <a href="/api/v1/perps.json">perps</a>.</p></div>
+    <div><h4>Data</h4><p>Every number on this page is in the open JSON API: <a href="/api/v1/venues.json">venues</a>, <a href="/api/v1/execution.json">execution</a>, <a href="/api/v1/tokens.json">tokens</a>, <a href="/api/v1/lp.json">pools</a>, <a href="/api/v1/perps.json">perps</a>, <a href="/api/v1/venue_history.json">venue history</a>.</p></div>
   </footer>
 </main>
 <script>
 {icons}
-(function () {{
-  var b = document.getElementById("theme"), h = document.querySelector(".head"), m = document.getElementById("burger");
-  function label() {{ var d = document.documentElement.getAttribute("data-theme") === "dark"; b.innerHTML = (d ? SUN : MOON) + (d ? "<span>Light</span>" : "<span>Dark</span>"); }}
-  label();
-  b.addEventListener("click", function () {{
-    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    try {{ localStorage.setItem("venues-theme", next); }} catch (e) {{}}
-    label();
-  }});
-  m.addEventListener("click", function () {{ var o = h.classList.toggle("open"); m.setAttribute("aria-expanded", o ? "true" : "false"); }});
-}})();
+{NAV_JS}
+{script}
 </script>
 </body>
 </html>
@@ -1260,11 +1348,151 @@ def intent_url(f: dict, head: dict) -> str:
     return f"https://x.com/intent/post?text={quote(share_text(f, head))}&url={quote(url, safe='')}"
 
 
-def _table(headers: list[tuple[str, str]], rows: list[list[str]]) -> str:
+def _table(headers: list[tuple[str, str]], rows: list[list[str]], cls: str = "mini") -> str:
     th = "".join(f'<th class="{c}">{e(h)}</th>' for h, c in headers)
     body = "".join("<tr>" + "".join(f'<td class="{headers[i][1]}">{cell}</td>' for i, cell in enumerate(r))
                    + "</tr>" for r in rows)
-    return f'<div class="tablewrap"><table class="mini"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>'
+    return f'<div class="tablewrap"><table class="{cls}"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+# === history ===============================================================
+
+def _day(t: int) -> str:
+    d = datetime.fromtimestamp(t, UTC)
+    return f"{d.day} {d:%b %Y}"
+
+
+def venue_series(slug: str, f: dict, hist: dict) -> list[dict]:
+    """The page's charts, from venue_history.json: each venue's daily volume and its share of Canton's
+    where an outside record goes back, then our own hourly readings, each labelled with its source and
+    the date it starts. A series with under two points draws an honest "recording since" line."""
+    import venue_history as vh
+    out = []
+    daily = (hist.get("daily") or {}).get(slug) or {}
+    pts = daily.get("points") or []
+    if len(pts) >= 2:
+        src = vh.SOURCES.get(daily.get("source"), "the venue")
+        out.append({"kind": "daily", "title": "Volume by day",
+                    "sub": f"Each day's volume, from {src}, since {_day(pts[0][0])}.",
+                    "pts": [[t * 1000, v] for t, v in pts], "fmt": "money"})
+        if daily.get("source") == "defillama":
+            tot = {t: v for t, v in hist.get("daily_total") or []}
+            share = [[t * 1000, round(v / tot[t], 5)] for t, v in pts if tot.get(t)]
+            if len(share) >= 2:
+                out.append({"kind": "share", "title": "Share of Canton DEX volume",
+                            "sub": f"Its share of each day's Canton DEX volume on DefiLlama, since {_day(pts[0][0])}.",
+                            "pts": share, "fmt": "pct"})
+    h = hist.get("hourly") or {}
+    ts = h.get("t") or []
+    cols = (h.get("venues") or {}).get(slug) or {}
+    for key, title in (("tvl", "Liquidity in pools"), ("spot_volume", "Spot volume, last 24 hours"),
+                       ("perp_volume", "Perps volume, last 24 hours"), ("open_interest", "Open interest")):
+        if f.get(key) is None or (key == "spot_volume" and len(pts) >= 2):
+            continue
+        p = [[t * 1000, v] for t, v in zip(ts, cols.get(key) or []) if v is not None]
+        since = stamp(p[0][0] // 1000) if p else None
+        out.append({"kind": key, "title": title,
+                    "sub": (f"Our own reading, every hour since {since}." if len(p) >= 2
+                            else "Our own reading, every hour."),
+                    "pts": p, "fmt": "money",
+                    "empty": (f"Recording since {since}. The line starts with the second hourly reading."
+                              if since else "Recording starts with the next reading.")})
+    return out
+
+
+def spark_svg(vals: list[float], w: int = 136, h: int = 44) -> str:
+    """The dashboard's 7-day sparkline, drawn here: green when the last point is at or above the first."""
+    if len(vals) < 7:  # an empty box of the same size keeps every row the same height
+        return f'<svg class="spark" width="{w}" height="{h}" aria-hidden="true"></svg>'
+    lo, hi = min(vals), max(vals)
+    span = hi - lo or 1
+    pts = " ".join(f"{n / (len(vals) - 1) * w:.1f},{h - 3 - (v - lo) / span * (h - 6):.1f}" for n, v in enumerate(vals))
+    col = "var(--up)" if vals[-1] >= vals[0] else "var(--down)"
+    return (f'<svg class="spark" width="{w}" height="{h}" viewBox="0 0 {w} {h}" aria-hidden="true"><polyline '
+            f'points="{pts}" fill="none" stroke="{col}" stroke-width="1.5" stroke-linejoin="round"/></svg>')
+
+
+def charts_html(f: dict) -> tuple[str, str]:
+    """(the History section, the script that draws it with the dashboard's own line chart)."""
+    series = f.get("series") or []
+    if not series:
+        return "", ""
+    panels = "".join(f'<div class="panel"><h3>{e(s["title"])}</h3><p class="sub">{e(s["sub"])}</p>'
+                     f'<div class="tchart" id="ch{n}"></div></div>' for n, s in enumerate(series))
+    data = json.dumps([{"pts": s["pts"], "fmt": s["fmt"], "empty": s.get("empty")} for s in series],
+                      separators=(",", ":")).replace("</", "<\\/")
+    section = f"""  <section class="block">
+    <h2>History</h2>
+    <div class="charts" style="margin-top:14px">{panels}</div>
+  </section>"""
+    _, _, _, chart = _site_parts()
+    # the dashboard's chart lifts the pen over a gap, which leaves its area fill a stray triangle; a day
+    # DefiLlama skips is drawn straight across here instead
+    chart = chart.replace("p[0] - pts[i - 1][0] <= 3 * med", "true")
+    script = f"""const $ = (id) => document.getElementById(id);
+{chart}
+const SERIES = {data};
+const FMT = {{ money: money, pct: (v) => (v * 100).toFixed(1) + "%" }};
+window.charts = function () {{ SERIES.forEach((s, n) => lineChart("ch" + n, s.pts, FMT[s.fmt], {{ empty: s.empty, h: 200, color: "var(--accent)" }})); }};
+window.charts();
+let rz; addEventListener("resize", () => {{ clearTimeout(rz); rz = setTimeout(window.charts, 150); }});"""
+    return section, script
+
+
+# === best price ============================================================
+
+def _trade(symbol: str, kind: str, side: str) -> str:
+    """One direction of a quote in words: "Buy CBTC with dollars", "Sell HANDL for CC"."""
+    if kind == "usd":
+        return f"Buy {symbol} with dollars" if side == "buy" else f"Sell {symbol} for dollars"
+    return f"Buy {symbol} with CC" if side == "sell" else f"Sell {symbol} for CC"
+
+
+BEST_ROWS_SHOWN = 10  # trades in the best-price table before the rest fold away
+
+
+def best_price_html(f: dict) -> str:
+    """Per token and direction, at each trade size: is this venue the best price? One table, the
+    tokens it wins first; tokens it never wins are named in one line under it."""
+    q = f.get("quotes") or []
+    if not q:
+        return ""
+    sizes = sorted({x["size"] for x in q})
+    groups: dict[tuple, dict] = {}
+    for x in q:
+        groups.setdefault((x["symbol"], x["kind"], x["key"]), {})[(x["side"], x["size"])] = x["best"]
+    wins = {k: sum(g.values()) for k, g in groups.items()}
+    won = sorted((k for k in groups if wins[k]), key=lambda k: (-wins[k], k[0]))
+    rest = sorted({k[0] for k in groups if not wins[k]} - {k[0] for k in won})
+    name = e(f["name"])
+    rows = []
+    for k in won:
+        sym, kind, key = k
+        g = groups[k]
+        for side in (("buy", "sell") if kind == "usd" else ("sell", "buy")):
+            if not any((side, s) in g for s in sizes):
+                continue
+            cells = [('<span class="best">Best</span>' if g[(side, s)] else '<span class="muted">No</span>')
+                     if (side, s) in g else '<span class="muted">n/a</span>' for s in sizes]
+            rows.append([f'<a class="plain" href="/#t/{quote(key)}"><b>{e(_trade(sym, kind, side))}</b></a>'] + cells)
+    lead = (f'<p class="sub">The same trade on every venue we read, at four sizes. <span class="best">Best</span> '
+            f"means {name} gives you the most back. Pool fees and price impact are included, network fees are not. "
+            f"A market with under {e(money(MIN_LIQUIDITY_USD))} of liquidity is left out. "
+            f'<a href="/#execution">Compare every venue</a></p>')
+    hdr = [("Trade", "l")] + [(SIZE_LABEL.get(s, money(s)), "") for s in sizes]
+    shown = BEST_ROWS_SHOWN
+    more = (f'<details class="bpmore"><summary>Show {len(rows) - shown} more trades</summary>'
+            f'{_table(hdr, rows[shown:], "mini bp")}</details>' if len(rows) > shown + 2 else "")
+    table = (f'<div class="panel">{_table(hdr, rows if not more else rows[:shown], "mini bp")}{more}</div>'
+             if rows else f'<p class="sub">{name} is not the best price on any trade we compare right now.</p>')
+    tail = (f'<p class="sub" style="margin:12px 0 0">Not the best price at any size right now: {e(", ".join(rest))}.</p>'
+            if rest else "")
+    return f"""  <section class="block">
+    <h2>Where {name} is the best price</h2>
+    {lead}
+    {table}
+    {tail}
+  </section>"""
 
 
 def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
@@ -1277,29 +1505,9 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
              else f"{f['name']} on Canton: {_lower_first(head['title'])} | Canton Venues")
     desc = (f"{head['title']}. {head['sub']}. Live {f['name']} data on Canton Network: volume, "
             "liquidity and best execution, refreshed every five minutes.")
-    parts = []
-    lead = f"<b>{e(head['title'])}.</b> {e(head['sub'])}."
-    led = lead_line(f, head)
-    if led:
-        lead = f'<span class="vleads">{e(led)}</span>'
-
-    parts.append(f"""  <p class="crumbs"><a href="/">Canton Venues</a> / <a href="/venues/">Venues</a> / {e(f['name'])}</p>
+    parts = [f"""  <p class="crumbs"><a href="/">Canton Venues</a> / <a href="/venues/">Venues</a> / {e(f['name'])}</p>
   <div class="vhead"><h1>{e(f['name'])}</h1><span class="vchip">{e(f['kind'])}</span><span class="vst {'priced' if f['status'] == 'priced' else ''}">{'Read live' if f['status'] in LIVE else 'Unreachable'}</span></div>
-  <p class="vlead">{lead}</p>""")
-    handle = (f'<a class="btn" href="https://x.com/{e(v["x"])}" target="_blank" rel="noopener">{X_ICON}@{e(v["x"])}</a>'
-              if v.get("x") else "")
-    parts.append(f"""  <div class="vtop">
-    <img class="vcard" src="card.png?v={cv}" width="1200" height="630" alt="{e(f['name'])}: {e(head['title'])}. {e(head['sub'])}.">
-    <div class="panel acts">
-      <h3>Share this venue</h3>
-      <p class="muted" style="margin:0">The card updates with the data. Shared on X, it shows as the preview.</p>
-      <a class="btn x" href="{e(intent_url(f, head))}" target="_blank" rel="noopener">{X_ICON}Share on X</a>
-      <a class="btn" href="{e(v['site'])}" target="_blank" rel="noopener">{e(v['site'].split('//')[1])} ↗</a>
-      {handle}
-      <a class="btn" href="card.png?v={cv}" download="canton-venues-{e(v['slug'])}.png">Download card</a>
-      <a class="btn" href="/#venues">All venues on the dashboard</a>
-    </div>
-  </div>""")
+  {lead_html(f, head)}"""]
 
     st = []
     if f.get("spot_volume") is not None:
@@ -1315,9 +1523,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     if f.get("open_interest") is not None:
         st.append(("Open interest", money(f["open_interest"])))
     if f.get("tvl") is not None:
-        st.append(("In pools", money(f["tvl"])))
-        st.append(("CC pools", f"{f['pool_n']}, {f['pool_priced']} priced" if f["pool_priced"] < f["pool_n"]
-                   else str(f["pool_n"])))
+        st.append((f"In {pools_text(f)}", money(f["tvl"])))
     tf = token_facts(f)
     if f.get("tokens"):
         listed = f.get("listed") or []
@@ -1330,40 +1536,22 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     if f.get("perp_markets"):
         live = sum(1 for m in f["perp_markets"] if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD)
         st.append(("Perp markets trading", f"{live} of {len(f['perp_markets'])}"))
-    parts.append('  <div class="stats" style="margin-top:16px">' + "".join(
+    parts.append('  <div class="stats">' + "".join(
         f'<div class="stat"><div class="k">{e(k)}</div><div class="v num">{e(val)}</div></div>' for k, val in st)
         + "</div>")
 
-    if f.get("exec"):
-        sizes = sorted({int(k.split(":")[1]) for k in f["exec"]})
-        rows = []
-        for scope, label in (("cc", "CC pairs on pools"), ("usd", "Dollar quotes (order-book tokens)")):
-            cells = [f["exec"].get(f"{scope}:{s}") for s in sizes]
-            if not any(cells):
-                continue
-            rows.append([f"<b>{label}</b>"] + [
-                f'<span class="{"won" if c and c["won"] else "muted"}">{c["won"]}</span><span class="muted"> of {c["of"]}</span>'
-                if c else f'<span class="muted">{NA}</span>' for c in cells])
-        won = {}
-        for r in f["won_rows"]:
-            won.setdefault(r["pair"], []).append(SIZE_LABEL.get(r["size"], str(r["size"])))
-        won_list = "".join(f"<li><b>{e(p)}</b>: best at {e(', '.join(s))}</li>" for p, s in won.items())
-        won_list = f'<ul class="notes">{won_list}</ul>' if won_list else ""
-        if len(won) > 8:  # a long list folds, so the tables below stay in reach on a phone
-            won_list = (f'<details><summary class="sub" style="cursor:pointer">Show all {len(won)}</summary>'
-                        f"{won_list}</details>")
-        parts.append(f"""  <section class="block" style="margin-top:28px">
-    <h2>Where {e(f['name'])} is the best price</h2>
-    <p class="sub">Quotes won out of quotes {e(f['name'])} could fill, at each trade size, buy and sell. Same amount on every venue; pool fees and price impact included, network fees excluded. A pool with under {e(money(MIN_LIQUIDITY_USD))} of liquidity, or a book with under {e(money(MIN_LIQUIDITY_USD))} within 1% of mid, is not counted, and a quote left with one venue counts for nobody. <a href="/#execution">Compare every venue →</a></p>
-    <div class="panel">{_table([("Quotes", "l")] + [(SIZE_LABEL.get(s, str(s)), "") for s in sizes], rows)}
-    {f'<p class="sub" style="margin:14px 0 0">Best price right now, by direction</p>{won_list}' if won_list else '<p class="sub" style="margin:14px 0 0">Not the best price on any quote right now.</p>'}</div>
-  </section>""")
+    charts, script = charts_html(f)
+    if charts:
+        parts.append(charts)
+    if bp := best_price_html(f):
+        parts.append(bp)
 
     if f.get("tokens"):
         ob = any(x.get("market") for x in f["tokens"])
         hdr = [("Token", "l"), ("Price here", ""), ("Liquidity", ""), ("Within 1% of mid", "")]
         if ob:
             hdr = [("Token", "l"), ("Market", "l"), ("Price here", ""), ("Within 1% of mid", ""), ("Spread", "")]
+
         def token_rows(xs):
             rows = []
             for x in sorted(xs, key=lambda x: -(token_liquidity(x) or 0))[:25]:
@@ -1419,6 +1607,22 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     <div class="panel">{_table([("Market", "l"), ("Price", ""), ("Basis", ""), ("Funding", ""), ("Spread", ""), ("Open interest", ""), ("Volume (24h)", "")], rows)}</div>
   </section>""")
 
+    handle = (f'<a class="btn" href="https://x.com/{e(v["x"])}" target="_blank" rel="noopener">{X_ICON}@{e(v["x"])}</a>'
+              if v.get("x") else "")
+    parts.append(f"""  <section class="block">
+    <h2>Share {e(f['name'])}</h2>
+    <p class="sub">The card updates with the data. Shared on X, it shows as the preview.</p>
+    <div class="vtop">
+    <img class="vcard" src="card.png?v={cv}" width="1200" height="630" alt="{e(f['name'])}: {e(head['title'])}. {e(head['sub'])}.">
+    <div class="acts">
+      <a class="btn x" href="{e(intent_url(f, head))}" target="_blank" rel="noopener">{X_ICON}Share on X</a>
+      <a class="btn" href="card.png?v={cv}" download="canton-venues-{e(v['slug'])}.png">Download card</a>
+      <a class="btn" href="{e(v['site'])}" target="_blank" rel="noopener">{e(v['site'].split('//')[1])} ↗</a>
+      {handle}
+    </div>
+  </div>
+  </section>""")
+
     method = f["method"] + [x for x in card_method(f, head) if x not in f["method"]]
     notes = "".join(f"<li>{e(n)}</li>" for n in method)
     parts.append(f"""  <section class="block">
@@ -1426,24 +1630,60 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     <ul class="notes">{notes}</ul>
     <p class="sub" style="margin-top:12px">Something wrong or missing? <a href="/#contact">Write to us</a>.</p>
   </section>""")
-    return _shell(title, desc, url, image, "\n".join(parts), t)
+    return _shell(title, desc, url, image, "\n".join(parts), t, script)
+
+
+TYPE_SHORT = {"Spot order book": "Order book", "Spot AMM": "AMM", "Perpetuals": "Perps",
+              "Spot order book + Perpetuals": "Order book + perps"}
 
 
 def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None) -> str:
-    card_v = card_v or {}
-    tiles = "".join(
-        f'<a class="vtile" href="{e(s)}/"><img src="{e(s)}/card.png?v={card_v.get(s, t)}" width="1200" height="630" loading="lazy" alt=""><div>'
-        f'<b>{e(f["name"])}</b><p>{e(heads[s]["title"])}. {e(heads[s]["sub"])}.</p></div></a>'
-        for s, f in all_facts.items())
+    """Every venue we read in one table, the dashboard's way: name, type, what it is #1 at, volume,
+    liquidity, open interest and a 30-day volume line where a daily record exists."""
+    def vol(f):  # the figure the Volume column shows: spot, or perps for a perps-only venue
+        return f.get("spot_volume") if f.get("spot_volume") is not None else (f.get("perp_volume") or 0)
+
+    order = sorted(all_facts, key=lambda s: -vol(all_facts[s]))
+    rows = []
+    for n, s in enumerate(order, 1):
+        f, h = all_facts[s], heads[s]
+        lead = "" if h["rule"] in PLAIN else f'<b class="up">#1</b> {e(tag(h["title"]))}'
+        name = (f'<a class="plain" href="{e(s)}/"><b>{e(f["name"])}</b></a>'
+                + (f'<div class="tagline">{lead}</div>' if lead else ""))
+        if f.get("spot_volume") is not None:
+            v24 = money(f["spot_volume"])
+        elif f.get("perp_volume") is not None:
+            v24 = f'{money(f["perp_volume"])}<span class="muted"> perps</span>'
+        else:
+            v24 = '<span class="muted">not published</span>'
+        perps = money(f["perp_volume"]) if f.get("perp_volume") is not None else '<span class="muted">n/a</span>'
+        if f.get("tvl") is not None:
+            liq = money(f["tvl"])
+        elif f.get("deepest") and f["deepest"].get("usd") and not f.get("keyed"):
+            liq = f'{money(f["deepest"]["usd"])}<span class="muted"> 1% depth</span>'
+        else:
+            liq = '<span class="muted">n/a</span>'
+        oi = money(f["open_interest"]) if f.get("open_interest") else '<span class="muted">n/a</span>'
+        daily = next((x for x in f.get("series") or [] if x["kind"] == "daily"), None)
+        spark = spark_svg([p[1] for p in daily["pts"][-30:]] if daily else [])
+        rows.append(f'<tr class="click" data-href="{e(s)}/"><td class="l rank num">{n}</td><td class="l">{name}</td>'
+                    f'<td class="l hide-sm"><span class="vchip">{e(TYPE_SHORT.get(f["kind"], f["kind"]))}</span></td>'
+                    f'<td class="l lead hide-sm">{lead}</td><td class="num">{v24}</td>'
+                    f'<td class="num hide-sm">{perps}</td><td class="num hide-sm">{liq}</td>'
+                    f'<td class="num hide-sm">{oi}</td><td class="hide-sm" style="width:150px">{spark}</td></tr>')
+    checked = (" A lead that says on Canton is also checked against DefiLlama's Canton DEX list."
+               if any(heads[s].get("scope") == "canton" for s in order) else "")
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
-  <div class="title" style="padding-top:4px"><h1>Every venue we read</h1><p>A page for each Canton venue Canton Venues reads live: volume, liquidity, where it is the best price, and a card to share. Refreshed every five minutes.</p></div>
-  <div class="vgrid">{tiles}</div>"""
-    first = next(iter(all_facts))
+  <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton trading venue we read live, by 24h volume. Click one for its page, its history and a card to share.</p></div>
+  <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Leads at</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
+  <p class="sub" style="margin-top:14px">Leads at: where a venue leads the Canton venues we read by 10% or more, thin markets under {e(money(MIN_LIQUIDITY_USD))} set aside.{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity, or dollars within 1% of mid on the deepest public book. Daily volume from DefiLlama, or from the venue's own record.</p>"""
+    first = order[0]
+    script = """document.querySelectorAll("tr[data-href]").forEach((r) => r.addEventListener("click", (ev) => { if (!ev.target.closest("a")) location.href = r.dataset.href; }));"""
     return _shell("Canton venues: a live page for every DEX we read | Canton Venues",
                   f"Live pages for {len(all_facts)} Canton Network venues: "
-                  + ", ".join(f["name"] for f in all_facts.values())
+                  + ", ".join(all_facts[s]["name"] for s in order)
                   + ". Volume, liquidity and best execution, refreshed every five minutes.",
-                  f"{SITE}/venues/", f"{SITE}/venues/{first}/card.png?v={card_v.get(first, t)}", body, t)
+                  f"{SITE}/venues/", f"{SITE}/venues/{first}/card.png?v={(card_v or {}).get(first, t)}", body, t, script)
 
 
 # === build =================================================================
@@ -1486,6 +1726,12 @@ def build(out: Path, data: dict, t: int, cards: bool = True, look: str = "venue"
                 del heads[s]
                 shown[s] = guard.last_head(s) or shown[s]
                 card_v[s] = int(card.stat().st_mtime) if card.exists() else t
+                # the venues table shows the held venue's last published figures, never the doubtful ones
+                kept = (guard.state["venues"].get(s) or {}).get("figures") or {}
+                held = {k: kept.get(k) for k in ("spot_volume", "perp_volume", "tvl", "open_interest")}
+                if "depth" in kept and f.get("deepest"):
+                    held["deepest"] = {**f["deepest"], "usd": kept["depth"]}
+                all_facts[s] = {**f, **held, "series": f.get("series")}
                 continue
         if cards or not card.exists():
             render_card(f, heads[s], t, card, look=look)
@@ -1513,13 +1759,20 @@ def main() -> None:
             for n in ("venues", "tokens", "execution", "lp", "perps")}
     if (args.api / "summary.json").exists():  # CC price and DefiLlama's Canton list
         data["summary"] = json.loads((args.api / "summary.json").read_text())
+    if (args.api / "venue_history.json").exists():  # the charts (venue_history.py)
+        data["history"] = json.loads((args.api / "venue_history.json").read_text())
     heads = build(args.out, data, data["venues"]["t"], look=args.look)
-    near = {s: f["near"] for s, f in facts(data).items()}
+    all_f = facts(data)
+    near = {s: f["near"] for s, f in all_f.items()}
     for s, h in heads.items():
-        margin = ("no lead" if h.get("margin") is None else
+        margin = ("no lead" if h["rule"] in PLAIN else "the only venue with it" if h.get("margin") is None else
                   f"net +{h['margin'] * 10_000:.0f} bp over {h['next']} after network fees"
                   if h["rule"] == "best_quote" else f"+{h['margin'] * 100:.0f}% over {h['next']}")
         print(f"{s:12} {h['rule']:13} {h['title']} | {h['sub']} | {margin} | scope {h.get('scope', '-')}")
+        for x in all_f[s]["leads"][1:]:
+            m = ("only venue" if x["margin"] is None else f"net +{x['margin'] * 10_000:.0f} bp" if x["rule"] == "best_quote"
+                 else f"+{x['margin'] * 100:.0f}% over {x['next']}")
+            print(f"{'':12} also: {x['rule']}: {x['title']} | {x['sub']} | {m}")
         for x in near.get(s, []):
             print(f"{'':12} not a lead: {x['rule']} only +{x['margin'] * 100:.1f}% over {x['next']}")
 

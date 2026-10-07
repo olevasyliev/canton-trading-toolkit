@@ -35,6 +35,7 @@ import alerts as al
 import digest
 import httpx
 import model as m
+import venue_history
 import venue_pages
 from model import CC, VenuePool
 from publish_guard import PublishGuard
@@ -146,6 +147,8 @@ class Collector:
         # row id -> unix time of the last successful read of that venue's data, for the publish guard
         self.fresh: dict[str, int] = {}
         self.guard = PublishGuard(out / "venues" / "published.json")
+        # per-venue daily volume and our hourly readings, for the venue pages' charts (venue_history.py)
+        self.vhist = load_json(self.api / "venue_history.json", {})
 
     async def start(self) -> None:
         await self.cantex.connect()
@@ -182,9 +185,8 @@ class Collector:
         except Exception as exc:  # noqa: BLE001
             log.warning("tradecraft volume: %s", exc)
         try:
-            dex = await self._json(f"{LLAMA}/overview/dexs/Canton",
-                                   {"excludeTotalDataChart": "true",
-                                    "excludeTotalDataChartBreakdown": "true"})
+            # the per-protocol daily breakdown feeds each venue page's volume history
+            dex = await self._json(f"{LLAMA}/overview/dexs/Canton", {"excludeTotalDataChart": "true"})
             chains = await self._json(f"{LLAMA}/v2/chains")
             self.slow["llama"] = {
                 "dex_volume_24h": dex.get("total24h"),
@@ -195,8 +197,23 @@ class Collector:
                                  key=lambda p: -(p["volume_24h"] or 0)),
                 "tvl": next((c["tvl"] for c in chains if c["name"] == "Canton"), None),
             }
+            now = int(time.time())
+            per, total = venue_history.llama_daily(dex, now)
+            for slug, pts in per.items():
+                venue_history.set_daily(self.vhist, slug, "defillama", pts, now)
+            if total:
+                self.vhist["daily_total"] = total
         except Exception as exc:  # noqa: BLE001
             log.warning("defillama: %s", exc)
+        # Tradecraft's own hourly volume per pool, last week, summed into complete days; once an hour
+        if time.time() - self.slow.get("tc_hist_t", 0) >= 3600:
+            try:
+                hist = [await self.tradecraft.volume_history(st.token_a, st.token_b, "week") for st in tc_states]
+                venue_history.set_daily(self.vhist, "tradecraft", "tradecraft",
+                                        venue_history.hourly_to_days(hist), int(time.time()))
+                self.slow["tc_hist_t"] = time.time()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("tradecraft volume history: %s", exc)
         temple = await self._venue("temple")
         if temple is not None:
             try:
@@ -668,12 +685,20 @@ class Collector:
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
+        pages = {"venues": venues, "tokens": {"t": now, "tokens": tokens},
+                 "execution": {"t": now, "pairs": execution},
+                 "lp": {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)},
+                 "perps": {"t": now, "markets": perps}, "summary": summary}
+        try:  # one hourly reading of every venue's figures, for its page's charts
+            live = {s: f for s, f in venue_pages.facts(pages).items() if f["status"] in venue_pages.LIVE}
+            if venue_history.record_hourly(self.vhist, now, live):
+                write_json(self.api / "venue_history.json", self.vhist)
+        except Exception:  # noqa: BLE001
+            log.exception("venue history")
+        pages["history"] = self.vhist
         try:  # a page per venue, its share card redrawn every few ticks
-            venue_pages.build(self.out, {"venues": venues, "tokens": {"t": now, "tokens": tokens},
-                                         "execution": {"t": now, "pairs": execution},
-                                         "lp": {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)},
-                                         "perps": {"t": now, "markets": perps}, "summary": summary},
-                              now, cards=self.tick_no % SLOW_EVERY == 0, guard=self.guard, fresh=self.fresh)
+            venue_pages.build(self.out, pages, now, cards=self.tick_no % SLOW_EVERY == 0, guard=self.guard,
+                              fresh=self.fresh)
         except Exception:  # one bad page must not fail the tick
             log.exception("venue pages")
         await self._alerts(tokens, premium, scan, now)

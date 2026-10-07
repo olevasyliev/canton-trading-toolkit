@@ -94,9 +94,22 @@ button { font: inherit; color: inherit; }
 .logo { flex-shrink: 0; white-space: nowrap; display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.01em; }
 .logo:hover { text-decoration: none; }
 .logo svg { width: 26px; height: 26px; }
-.nav { display: flex; gap: 20px; font-weight: 600; font-size: 14px; overflow-x: auto; scrollbar-width: none; }
+.nav { display: flex; align-items: center; gap: 20px; font-weight: 600; font-size: 14px; }
 .nav a { color: var(--text); white-space: nowrap; }
 .nav a:hover { color: var(--accent); text-decoration: none; }
+/* the Venues menu: every venue page, a dropdown on desktop and a fold-out list in the burger */
+.dd { position: relative; }
+.ddb { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 14px; color: var(--text); white-space: nowrap; }
+.ddb:hover, .dd.open .ddb { color: var(--accent); }
+.ddb svg { width: 12px; height: 12px; transition: transform .15s; }
+.dd.open .ddb svg { transform: rotate(180deg); }
+.ddm { display: none; position: absolute; top: calc(100% + 14px); left: -12px; min-width: 210px; background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 32px rgba(13, 20, 33, .14); padding: 6px; z-index: 20; }
+.dd.open .ddm { display: block; }
+.ddm a { display: block; padding: 8px 10px; border-radius: 8px; font-weight: 500; color: var(--text); }
+.ddm a:hover { background: var(--bg-2); color: var(--accent); }
+.ddm a.all { font-weight: 600; }
+a.plain { color: var(--text); }
+a.plain:hover { color: var(--accent); text-decoration: none; }
 .theme { margin-left: auto; border: 1px solid var(--line-2); background: var(--bg-2); border-radius: 8px; height: 34px; padding: 0 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); flex-shrink: 0; }
 .theme:hover { color: var(--text); }
 .theme svg { width: 16px; height: 16px; }
@@ -306,9 +319,14 @@ body:not(.tv) #tokenview { display: none; }
   .burger { display: flex; }
   .theme { margin-left: 0; }
   .nav { display: none; position: absolute; top: calc(100% + 6px); right: 24px; width: 240px; flex-direction: column; gap: 0; background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 32px rgba(13, 20, 33, .14); padding: 6px 18px; max-height: calc(100vh - 80px); overflow-y: auto; }
-  .head.open .nav { display: flex; }
+  .head.open .nav { display: flex; align-items: stretch; }
   .nav a { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
   .nav a:last-child { border-bottom: 0; }
+  .dd { border-bottom: 1px solid var(--line); }
+  .ddb { display: flex; justify-content: space-between; width: 100%; padding: 11px 0; font-size: 15px; }
+  .ddm { position: static; min-width: 0; border: 0; box-shadow: none; background: none; padding: 0 0 8px 12px; }
+  .ddm a { padding: 8px 0; border-bottom: 0; font-size: 14px; border-radius: 0; }
+  .ddm a:hover { background: none; }
 }
 @media (max-width: 720px) {
   .nav { top: 100%; left: 0; right: 0; width: auto; border-width: 0 0 1px; border-radius: 0; padding: 6px 16px 12px; max-height: calc(100vh - 56px); }
@@ -357,7 +375,7 @@ body:not(.tv) #tokenview { display: none; }
       Canton Venues
     </a>
     <nav class="nav" id="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><a href="#venues">Venues</a><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#study">Spreads</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a><a href="#contact">Contact</a>
+      <a href="#tokens">Tokens</a><a href="#heatmap">Heatmap</a><div class="dd" id="ddvenues"><button class="ddb" type="button" aria-expanded="false" aria-controls="ddmenu">Venues<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="ddm" id="ddmenu"><a class="all" href="/venues/">All venues</a><a href="/venues/temple/">Temple</a><a href="/venues/cantex/">Cantex</a><a href="/venues/rocky/">Rocky</a><a href="/venues/tradecraft/">Tradecraft</a><a href="/venues/ekiden/">Ekiden</a><a href="/venues/oneswap/">OneSwap</a><a href="/venues/pool-party/">Pool Party</a></div></div><a href="#premium">Premium</a><a href="#perps">Perps</a><a href="#alerts">Alerts</a><a href="#execution">Execution</a><a href="#desk">Paper desk</a><a href="#study">Spreads</a><a href="#yields">Pools</a><a href="#api">API &amp; MCP</a><a href="#contact">Contact</a>
     </nav>
     <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
@@ -749,7 +767,7 @@ function renderVenues() {
   const order = { priced: 0, down: 1, volume: 2, next: 3, waiting: 4, closed: 5, testnet: 6 };
   const sorted = [...rows].sort((a, b) => (order[a.status] - order[b.status]) || ((b.volume_24h_usd || 0) - (a.volume_24h_usd || 0)));
   $("ventable").innerHTML = `<thead><tr><th class="l">Venue</th><th class="l hide-sm">Type</th><th>Volume (24h)</th><th class="l">Data</th><th class="l hide-sm">What we read</th></tr></thead><tbody>` +
-    sorted.map((x) => `<tr><td class="l">${VP[x.id] && x.status !== "down" ? `<a href="venues/${VP[x.id]}/">` : ""}<b style="${VC[x.id] && x.status === "priced" ? "color:" + VC[x.id] : ""}">${esc(x.name)}</b>${VP[x.id] && x.status !== "down" ? "</a>" : ""}</td><td class="l hide-sm muted">${esc(x.kind)}</td>
+    sorted.map((x) => `<tr><td class="l">${VP[x.id] && x.status !== "down" ? `<a class="plain" href="venues/${VP[x.id]}/">` : ""}<b>${esc(x.name)}</b>${VP[x.id] && x.status !== "down" ? "</a>" : ""}</td><td class="l hide-sm muted">${esc(x.kind)}</td>
       <td class="num">${x.volume_24h_usd == null ? "–" : money(x.volume_24h_usd)}</td><td class="l"><span class="vst ${x.status}">${VST[x.status] || esc(x.status)}</span></td><td class="l note hide-sm">${esc(x.note)}</td></tr>`).join("") + "</tbody>";
 }
 
@@ -1007,7 +1025,7 @@ function renderAPI() {
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
-    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"]];
+    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"], ["venue_history", "Per venue: daily volume and our hourly readings"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;
@@ -1033,6 +1051,11 @@ $("burger").addEventListener("click", () => {
   $("burger").setAttribute("aria-expanded", open);
 });
 $("nav").addEventListener("click", (e) => { if (e.target.closest("a")) { document.querySelector(".head").classList.remove("open"); $("burger").setAttribute("aria-expanded", "false"); } });
+const dd = $("ddvenues"), ddb = dd.querySelector(".ddb");
+const ddSet = (o) => { dd.classList.toggle("open", o); ddb.setAttribute("aria-expanded", o); };
+ddb.addEventListener("click", (e) => { e.stopPropagation(); ddSet(!dd.classList.contains("open")); });
+document.addEventListener("click", (e) => { if (!dd.contains(e.target)) ddSet(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") ddSet(false); });
 
 /* ---------- contact ---------- */
 $("contactform").addEventListener("submit", async (e) => {

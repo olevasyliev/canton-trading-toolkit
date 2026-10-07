@@ -63,7 +63,8 @@ def test_the_collector_build_keeps_the_last_good_card_and_page(tmp_path):
     assert "cantex" not in heads and (page.read_text(), card.read_bytes()) == before
     assert "temple" in heads  # other venues still publish
     # the index keeps showing the held venue's last good headline
-    assert "The largest AMM on Canton by volume" in (tmp_path / "venues" / "index.html").read_text()
+    index = (tmp_path / "venues" / "index.html").read_text()
+    assert "Largest AMM on Canton by volume" in index and "$40M" not in index and "$4M" in index
     # stale data holds too: Cantex's last successful read was an hour ago
     g2 = pg.PublishGuard(tmp_path / "venues" / "published.json")
     assert "cantex" not in vp.build(tmp_path, data(), T + 3600, guard=g2, fresh={"cantex": T})
