@@ -26,6 +26,13 @@ import venue_pages as vp
 
 # fonts whose glyphs run small or narrow for their size are scaled to match the rest
 FONT_SCALE = {"VT323-Regular": 1.4, "BebasNeue-Regular": 1.3}
+# the foot strip, in 1x pixels: the same padding above its two lines (from the rule) and below them
+# (to the card's edge), the space between them, and where the stat tiles sit above it
+STRIP_PAD = 28
+STRIP_GAP = 12
+TILE_H = 124
+TILE_GAP = 26
+FRAME_IN = 12  # a framed card's frame closes this far above the strip
 
 # one row per venue slug (vp.VENUES). Colours: bg/bg2 the card (bg2 makes a gradient), ink the
 # headline, muted the subtitle, accent the eyebrow, rule the hairline under the top rail; tile*
@@ -160,10 +167,22 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
            else Image.new("RGB", (W, H), c["bg"]))
     d = ImageDraw.Draw(img)
     track = s["track"]
-    st = 544 * S  # where our strip starts
+    # our strip at the foot: its two lines get the same space above (from the rule) and below (to the
+    # card's edge), STRIP_PAD; the strip's height follows from the lines' own ink, so no line sits on
+    # the edge whatever the venue's fonts
+    sf = vp._font("SemiBold", 22 * S)
+    note = footer_note(f, head)
+    nf = _fit(d, note, "Inter-Regular", 18 * S, width, 14 * S)
+    first = d.textbbox((0, 0), strip_line(), font=sf, anchor="ls")
+    second = d.textbbox((0, 0), note, font=nf, anchor="ls")
+    gap = STRIP_GAP * S  # from the first line's baseline to the top of the second's ink
+    st = H - STRIP_PAD * S - (second[3] - second[1]) - gap - (-first[1]) - STRIP_PAD * S
+    base1 = st + STRIP_PAD * S - first[1]
+    base2 = base1 + gap - second[1]
+    tiles_top = st - TILE_GAP * S - TILE_H * S  # the tiles keep their distance from the rule
 
     if "frame" in c:  # a hairline frame round the page, as the venue's own site has
-        d.rectangle((14 * S, 14 * S, W - 14 * S, st - 14 * S), outline=c["frame"], width=S)
+        d.rectangle((14 * S, 14 * S, W - 14 * S, st - FRAME_IN * S), outline=c["frame"], width=S)
 
     # top rail: our mark and name on the left, the read time on the right in the venue's label face
     vp.draw_logo(d, M, 40 * S, 30 * S, c["ink"], c["bg"])
@@ -192,7 +211,7 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
     lines = lines or vp._wrap(d, title, tfont, width, 2)
     step = round(tfont.size * (1.0 if s["head_case"] == "upper" else 1.14))
     block = 22 * S + 24 * S + len(lines) * step + 12 * S + 28 * S
-    y = 96 * S + max(28 * S, (272 * S - block) // 2)
+    y = 96 * S + max(28 * S, (tiles_top - 18 * S - 96 * S - block) // 2)
     eyebrow = _case(f"{f['name']} / {f['kind']}", "upper")
     _text(d, (M, y + 18 * S), eyebrow, font(s["label"], 18 * S), c["accent"], max(track, 0.12))
     y += 22 * S + 24 * S
@@ -208,7 +227,7 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
     # stat tiles: label over a value over a small line, in the venue's own box shape
     panels = vp.stats(f)
     if panels:
-        gap, top, ph = 14 * S, 386 * S, 124 * S
+        gap, top, ph = 14 * S, tiles_top, TILE_H * S
         pw = (width - gap * (len(panels) - 1)) // len(panels)
         pad = 20 * S
         inner = pw - 2 * pad
@@ -235,14 +254,11 @@ def render(f: dict, head: dict, t: int, path: Path, style: dict | None = None) -
     # on the card's own background under a rule, the domain in the venue's accent
     if "frame" not in c:  # a framed card's own frame already closes the content above
         d.line((M, st, W - M, st), fill=c["rule"], width=S)
-    sf = vp._font("SemiBold", 22 * S)
     x = M
     for part, col in (("Live Canton DEX data from ", c["ink"]), ("cantonvenues.com", c["accent"])):
-        d.text((x, st + 32 * S), part, font=sf, fill=col, anchor="lm")
+        d.text((x, base1), part, font=sf, fill=col, anchor="ls")
         x += d.textlength(part, font=sf)
-    note = footer_note(f, head)
-    d.text((M, st + 62 * S), note, font=_fit(d, note, "Inter-Regular", 18 * S, width, 14 * S), fill=c["muted"],
-           anchor="lm")
+    d.text((M, base2), note, font=nf, fill=c["muted"], anchor="ls")
 
     out = img.resize((1200, 630), Image.LANCZOS)
     path.parent.mkdir(parents=True, exist_ok=True)

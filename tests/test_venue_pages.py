@@ -761,12 +761,118 @@ def test_venue_history_series():
     c = st["hourly"]["venues"]
     assert c["cantex"]["tvl"] == [5.0, 6.0] and c["cantex"]["spot_volume"] == [1.0, None]
     assert c["ekiden"]["open_interest"] == [None, 2.0]
-    # the page labels a series with its source and start, and says so when it has one point
-    f = vp.facts({**data(), "history": {"daily": {"temple": {"source": "defillama", "points": per["temple"]}},
-                                        "daily_total": total, "hourly": st["hourly"]}})
+    # the page labels a series with its source and start
+    three = [[T - 2 * 86400, 25.0], *per["temple"]]
+    tot3 = [[T - 2 * 86400, 50.0], *total]
+    f = vp.facts({**data(), "history": {"daily": {"temple": {"source": "defillama", "points": three}},
+                                        "daily_total": tot3, "hourly": st["hourly"]}})
     titles = [(s["title"], s["sub"]) for s in f["temple"]["series"]]
-    assert titles[0][0] == "Volume by day" and "DefiLlama" in titles[0][1] and "since 6 Oct 2026" in titles[0][1]
+    assert titles[0][0] == "Volume by day" and "DefiLlama" in titles[0][1] and "since 5 Oct 2026" in titles[0][1]
     assert f["temple"]["series"][1]["pts"][-1][1] == pytest.approx(0.4)
-    one = next(s for s in vp.facts({**data(), "history": {"hourly": {"t": [T], "venues": {"oneswap": {"tvl": [1.0]}}}}})
-               ["oneswap"]["series"] if s["kind"] == "tvl")
-    assert one["empty"].startswith("Recording since 7 Oct 2026")
+
+
+def _hist(n_hourly: int, n_daily: int) -> dict:
+    """A venue history with ``n_hourly`` hourly readings of every figure and ``n_daily`` days of volume."""
+    ts = [T - 3600 * (n_hourly - 1 - k) for k in range(n_hourly)]
+    cols = {"tvl": [1000.0 + k for k in range(n_hourly)], "perp_volume": [5.0] * n_hourly,
+            "open_interest": [7.0] * n_hourly, "spot_volume": [3.0] * n_hourly}
+    days = [[T - 86400 * (n_daily - 1 - k), 10.0 + k] for k in range(n_daily)]
+    return {"hourly": {"t": ts, "venues": {s: dict(cols) for s in ("tradecraft", "rocky", "ekiden", "oneswap",
+                                                                    "pool-party")}},
+            "daily": {"temple": {"source": "defillama", "points": days},
+                      "tradecraft": {"source": "tradecraft", "points": days}},
+            "daily_total": [[t, 100.0] for t, _ in days]}
+
+
+def test_a_history_panel_draws_only_once_it_is_a_line(tmp_path):
+    """No "recording since" placeholders: a series under its minimum is left out, and the History
+    heading with it; the same pages grow their panels by themselves as readings accrue."""
+    pytest.importorskip("PIL")
+    assert vp.MIN_HOURLY_POINTS == 24 and vp.MIN_DAILY_POINTS == 3
+    early = vp.facts({**data(), "history": _hist(vp.MIN_HOURLY_POINTS - 1, vp.MIN_DAILY_POINTS - 1)})
+    assert all(not f["series"] for f in early.values())
+    out = tmp_path / "early"
+    vp.build(out, {**data(), "history": _hist(vp.MIN_HOURLY_POINTS - 1, vp.MIN_DAILY_POINTS - 1)}, T)
+    for slug in ("temple", "tradecraft", "rocky", "ekiden", "oneswap", "pool-party"):
+        page = (out / "venues" / slug / "index.html").read_text()
+        assert "<h2>History</h2>" not in page and "Recording since" not in page and 'class="tchart"' not in page
+
+    later = vp.facts({**data(), "history": _hist(vp.MIN_HOURLY_POINTS, vp.MIN_DAILY_POINTS)})
+    kinds = {s: [x["kind"] for x in f["series"]] for s, f in later.items()}
+    assert kinds["tradecraft"] == ["daily", "tvl"]  # its own daily record stands in for hourly volume
+    assert kinds["rocky"] == ["spot_volume", "perp_volume"]  # no open interest published: no panel for it
+    assert kinds["ekiden"] == ["perp_volume", "open_interest"]
+    assert kinds["oneswap"] == ["tvl"] and kinds["pool-party"] == ["tvl", "spot_volume"]
+    assert kinds["temple"] == ["daily", "share"]
+    assert all(len(x["pts"]) >= vp.MIN_HOURLY_POINTS for x in later["ekiden"]["series"])
+    out = tmp_path / "later"
+    vp.build(out, {**data(), "history": _hist(vp.MIN_HOURLY_POINTS, vp.MIN_DAILY_POINTS)}, T)
+    page = (out / "venues" / "ekiden" / "index.html").read_text()
+    assert "<h2>History</h2>" in page and page.count('class="tchart"') == 2
+    assert "Our own reading, every hour since 6 Oct 2026" in page
+
+
+def _bars(page: str, title: str) -> list[tuple[str, str]]:
+    """(label, value) of each bar in the "Right now" panel titled ``title``."""
+    panel = page.split(f"<h3>{title}</h3>", 1)[1].split('</div></div>', 1)[0]
+    return [(html.unescape(a), html.unescape(b)) for a, b in
+            re.findall(r'<span class="hl">([^<]*)</span>.*?<span class="hn num">([^<]*)</span>', panel)]
+
+
+def test_right_now_charts_need_no_history(tmp_path):
+    """Current-state bars on every venue page from the data of this tick alone: pools by liquidity,
+    perps and order-book markets by 24h volume, open interest by market. Thin ones summed as other."""
+    pytest.importorskip("PIL")
+    d = data()
+    d["lp"]["pools"] += [_pool("tradecraft", f"CC/T{k:02d}", 100_000 - k * 1000) for k in range(12)]
+    d["lp"]["pools"] += [_pool("tradecraft", "CC/DUST", 22), _pool("tradecraft", "CC/ZERO", 0)]
+    d["lp"]["pools"] += [_pool("oneswap", "CC/HECTO", 60_000)]
+    next(v for v in d["venues"]["venues"] if v["id"] == "temple")["markets_24h_usd"] = {
+        "CBTC/USDCx": 30_000_000.0, "CC/USDCx": 3_500_000.0, "eXAU/USDCx": 400.0}
+    next(v for v in d["venues"]["venues"] if v["id"] == "rocky")["markets_24h_usd"] = {
+        "CBTC-USDCX": 2_000_000.0, "CETH-USDCB": 800_000.0}
+    vp.build(tmp_path, d, T)  # no history at all
+    page = lambda s: (tmp_path / "venues" / s / "index.html").read_text()
+
+    tc = page("tradecraft")
+    assert "<h2>Right now</h2>" in tc and "<h2>History</h2>" not in tc
+    bars = _bars(tc, "Liquidity by pool")
+    assert len(bars) == vp.BARS_SHOWN + 1 and bars[0] == ("CC/USDCx", "$1.2M")
+    # past the top ten, the three smallest $1K+ pools and the $22 one are summed; the empty pool is not there
+    assert bars[-1] == ("4 other pools", vp.money(91_000 + 90_000 + 89_000 + 22))
+    assert "CC/ZERO" not in tc.split("<h2>Right now</h2>", 1)[1].split("</section>", 1)[0]
+    assert "Now, as of 7 Oct 2026, 13:43 UTC" in tc
+
+    assert _bars(page("oneswap"), "Liquidity by pool") == [("CC/HECTO", "$60K"), ("CC/USDCx", "$36K")]
+    # a single pool compares nothing: no chart, and no empty section either
+    assert "<h2>Right now</h2>" not in page("cantex")
+
+    assert _bars(page("temple"), "Volume by market, 24h") == [("CBTC/USDCx", "$30M"), ("CC/USDCx", "$3.5M"),
+                                                               ("1 other market", "$400")]
+    assert "settled volume in its quote token, as Temple reports it" in page("temple")
+    rk = page("rocky")
+    assert _bars(rk, "Spot volume by market, 24h") == [("CBTC/USDCx", "$2M"), ("CETH/USDC.B", "$800K")]
+    assert _bars(rk, "Perps volume by market, 24h") == [("BTC/USDCx", "$4M"), ("ETH/USDCx", "$600K")]
+    assert "Open interest by market" not in rk  # Rocky publishes none
+
+    ek = page("ekiden")
+    assert _bars(ek, "Volume by market, 24h") == [("BTC/USDCx", "$200K"), ("ETH/USDCx", "$60K"),
+                                                  ("CC/USDCx", "$20K")]
+    assert _bars(ek, "Open interest by market") == [("BTC/USDCx", "$40K"), ("ETH/USDCx", "$10K"),
+                                                    ("CC/USDCx", "$2K")]
+    assert "counted at $1" in ek and "open contracts at mark price" in ek
+
+    # bars are scaled to the largest, which fills the track
+    assert 'style="width:100.0%"' in ek
+    # every panel is labelled with when its figures are from
+    for s in ("tradecraft", "oneswap", "temple", "rocky", "ekiden"):
+        sec = page(s).split("<h2>Right now</h2>", 1)[1].split("</section>", 1)[0]
+        assert sec.count('<p class="sub">') == sec.count("as of 7 Oct 2026, 13:43 UTC") > 0
+
+
+def test_bar_rows_group_thin_and_need_two_bars():
+    assert vp.bar_rows([("a", 5_000), ("b", None), ("c", 0)], "pool") == []
+    rows = vp.bar_rows([("a", 5_000), ("b", 999)], "pool")
+    assert rows == [{"label": "a", "value": 5_000.0},
+                    {"label": "1 other pool", "value": 999.0, "other": True, "names": ["b"]}]
+    assert vp.book_label("CBTC-USDCX") == "CBTC/USDCx" and vp.book_label("eXAU/USDCx") == "eXAU/USDCx"

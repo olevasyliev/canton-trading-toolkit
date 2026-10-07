@@ -133,6 +133,7 @@ class Collector:
         self.live: set[str] = set()
         self.cc_usd_last = Decimal(0)
         self.temple_priced = False
+        self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -258,6 +259,7 @@ class Collector:
 
     async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, dict, float | None]:
         """Rocky's deepest book per token: its dollar quote, the book itself, and Rocky spot volume."""
+        self.rocky_books = {}
         rocky = await self._venue("rocky")
         if rocky is None:
             return {}, {}, None
@@ -291,15 +293,18 @@ class Collector:
                               "depth_usd": r(depth, 2),
                               "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)}
             volume = Decimal(0)
+            books_usd: dict[str, float] = {}
             for mk in markets:  # volume over every book, a CBTC-quoted one through the CBTC price
                 t, quote, k = tickers.get(mk.symbol), m.key(mk.quote), m.key(mk.base)
                 q_usd = quote_usd.get(quote) or (Decimal(str(out[quote]["price_usd"])) if quote in out else None)
                 if not (t and q_usd):
                     continue
                 volume += t.turnover_24h * q_usd
+                books_usd[mk.symbol] = float(t.turnover_24h * q_usd)
                 if k in out:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
             self.fresh["rocky"] = int(time.time())
+            self.rocky_books = books_usd
             return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, (b, _) in kept.items()},
                     float(volume))
         except Exception as exc:  # noqa: BLE001
@@ -434,6 +439,11 @@ class Collector:
             if v["id"] == "temple" and self.slow.get("temple_volume"):
                 # Temple's own list of markets that settled in 24h, so a page can say how many we price
                 rows[-1]["markets_24h"] = sorted(self.slow["temple_volume"])
+                # and each one's settled volume in its quote token, as Temple reports it
+                rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.slow["temple_volume"].items())}
+            if v["id"] == "rocky" and rocky_spot_vol is not None and self.rocky_books:
+                # each spot book's turnover, in dollars the same way the venue total is
+                rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.rocky_books.items())}
         spot = [x for x in rows if x["kind"] != "Perpetuals" and x["volume_24h_usd"]]
         total = sum(x["volume_24h_usd"] for x in spot)
         priced = sum(x["volume_24h_usd"] for x in spot if x["status"] == "priced")

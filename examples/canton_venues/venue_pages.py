@@ -444,6 +444,10 @@ def facts(data: dict) -> dict[str, dict]:
                 f["method"].append(f"Perps volume: 24h turnover in each market's quote token "
                                    f"({', '.join(sorted({m['quote'] for m in f['perp_markets']}))}), counted at $1.")
         f["tokens"] = sorted(tok_rows.get(i, []), key=lambda x: -(x.get("liquidity_usd") or 0))
+        # each spot market's own 24h volume, when the collector has it (Temple: settled volume per
+        # market; Rocky: each book's turnover in dollars), for the "Right now" chart
+        if main.get("markets_24h_usd"):
+            f["book_volume"] = dict(main["markets_24h_usd"])
         # the venue's own market list, when the collector has one (Temple: every market that settled
         # in the last 24h), so a card can say how many of them we price
         listed = [s.partition("/")[0] for s in main.get("markets_24h") or []]
@@ -1221,6 +1225,11 @@ table.bp th.l, table.bp td.l { width: auto; }
 .bpmore table thead { visibility: collapse; }
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .charts .tchart .empty { margin: 0; }
+.charts > .panel:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.hbars .hrow { grid-template-columns: minmax(0, 9.5em) minmax(0, 1fr) 4.4em; padding: 5px 4px; }
+.hbars .hl { color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hbars .hrow.other .hl { color: var(--text-2); font-weight: 500; }
+.hbars .hrow.other .hb i { background: var(--text-3); }
 table.vt td.lead { white-space: normal; min-width: 14em; }
 table.vt .tagline { display: none; color: var(--text-2); font-size: 12px; font-weight: 500; margin-top: 2px; white-space: normal; }
 ul.notes { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
@@ -1230,6 +1239,7 @@ ul.notes li { margin: 3px 0; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .vbig { font-size: 30px; }
   table.vt .tagline { display: block; }
+  .hbars .hrow { grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 4.4em; }
 }
 """
 
@@ -1362,15 +1372,22 @@ def _day(t: int) -> str:
     return f"{d.day} {d:%b %Y}"
 
 
+# A history chart draws only once it is a line worth reading: a day of our own hourly readings, or
+# a few days of a daily record. Until then the panel is left out (and the History heading with it,
+# when no panel qualifies); it appears by itself as the readings accrue.
+MIN_HOURLY_POINTS = 24
+MIN_DAILY_POINTS = 3
+
+
 def venue_series(slug: str, f: dict, hist: dict) -> list[dict]:
     """The page's charts, from venue_history.json: each venue's daily volume and its share of Canton's
     where an outside record goes back, then our own hourly readings, each labelled with its source and
-    the date it starts. A series with under two points draws an honest "recording since" line."""
+    the date it starts. A series shorter than ``MIN_DAILY_POINTS`` / ``MIN_HOURLY_POINTS`` is left out."""
     import venue_history as vh
     out = []
     daily = (hist.get("daily") or {}).get(slug) or {}
     pts = daily.get("points") or []
-    if len(pts) >= 2:
+    if len(pts) >= MIN_DAILY_POINTS:
         src = vh.SOURCES.get(daily.get("source"), "the venue")
         out.append({"kind": "daily", "title": "Volume by day",
                     "sub": f"Each day's volume, from {src}, since {_day(pts[0][0])}.",
@@ -1378,7 +1395,7 @@ def venue_series(slug: str, f: dict, hist: dict) -> list[dict]:
         if daily.get("source") == "defillama":
             tot = {t: v for t, v in hist.get("daily_total") or []}
             share = [[t * 1000, round(v / tot[t], 5)] for t, v in pts if tot.get(t)]
-            if len(share) >= 2:
+            if len(share) >= MIN_DAILY_POINTS:
                 out.append({"kind": "share", "title": "Share of Canton DEX volume",
                             "sub": f"Its share of each day's Canton DEX volume on DefiLlama, since {_day(pts[0][0])}.",
                             "pts": share, "fmt": "pct"})
@@ -1387,17 +1404,111 @@ def venue_series(slug: str, f: dict, hist: dict) -> list[dict]:
     cols = (h.get("venues") or {}).get(slug) or {}
     for key, title in (("tvl", "Liquidity in pools"), ("spot_volume", "Spot volume, last 24 hours"),
                        ("perp_volume", "Perps volume, last 24 hours"), ("open_interest", "Open interest")):
-        if f.get(key) is None or (key == "spot_volume" and len(pts) >= 2):
+        if f.get(key) is None or (key == "spot_volume" and len(pts) >= MIN_DAILY_POINTS):
             continue
         p = [[t * 1000, v] for t, v in zip(ts, cols.get(key) or []) if v is not None]
-        since = stamp(p[0][0] // 1000) if p else None
+        if len(p) < MIN_HOURLY_POINTS:
+            continue
         out.append({"kind": key, "title": title,
-                    "sub": (f"Our own reading, every hour since {since}." if len(p) >= 2
-                            else "Our own reading, every hour."),
-                    "pts": p, "fmt": "money",
-                    "empty": (f"Recording since {since}. The line starts with the second hourly reading."
-                              if since else "Recording starts with the next reading.")})
+                    "sub": f"Our own reading, every hour since {stamp(p[0][0] // 1000)}.",
+                    "pts": p, "fmt": "money"})
     return out
+
+
+# === now ===================================================================
+
+# The "Right now" bar charts: the current state, so a page has charts before any history accrues.
+# Up to BARS_SHOWN bars, largest first; a market under BAR_FLOOR_USD (the same $1K floor as
+# MIN_LIQUIDITY_USD and MIN_PERP_TURNOVER_USD) and everything past the largest BARS_SHOWN are
+# summed into one "other" bar. A market at zero is left out. A chart needs MIN_BARS bars in all:
+# one bar compares nothing.
+BARS_SHOWN = 10
+BAR_FLOOR_USD = MIN_LIQUIDITY_USD
+MIN_BARS = 2
+
+
+def book_label(symbol: str) -> str:
+    """A venue's market name the way people write it: "CBTC-USDCX" -> "CBTC/USDCx"."""
+    for sep in ("/", "-"):
+        if sep in symbol:
+            base, q = symbol.rsplit(sep, 1)
+            return f"{base}/{QUOTE_NAMES.get(q.upper(), q)}"
+    return symbol
+
+
+def bar_rows(items: list[tuple[str, float | None]], what: str) -> list[dict]:
+    """(label, value) pairs as bars: the largest ``BARS_SHOWN`` at or over the floor, the rest summed
+    into one "other" bar named for how many it holds (``what``: "pool", "market")."""
+    vals = sorted(((k, float(v)) for k, v in items if v), key=lambda x: -x[1])
+    big = [x for x in vals if x[1] >= BAR_FLOOR_USD][:BARS_SHOWN]
+    rest = [x for x in vals if x not in big]
+    rows = [{"label": k, "value": v} for k, v in big]
+    if rest:
+        n = len(rest)
+        rows.append({"label": f"{n} other {what}{'' if n == 1 else 's'}", "value": sum(v for _, v in rest),
+                     "other": True, "names": [k for k, _ in rest]})
+    return rows if len(rows) >= MIN_BARS else []
+
+
+def now_charts(f: dict, t: int) -> list[dict]:
+    """The current-state bar charts a venue's data supports, each titled with what it shows and
+    labelled with when and how it was read. Only figures the collector already publishes."""
+    when = stamp(t)
+    floor = money(BAR_FLOOR_USD)
+    out = []
+    if f.get("pools"):
+        rows = bar_rows([(p["pair"], p["tvl_usd"]) for p in f["pools"]], "pool")
+        if rows:
+            out.append({"kind": "pool_tvl", "title": "Liquidity by pool", "rows": rows,
+                        "sub": f"Now, as of {when}. Twice each pool's CC reserve, at our CC price. "
+                               f"Pools under {floor}, and past the largest {BARS_SHOWN}, are summed as other."})
+    books = f.get("book_volume") or {}
+    perps = f.get("perp_markets") or []
+    if books:
+        rows = bar_rows([(book_label(k), v) for k, v in books.items()], "market")
+        how = (f"each market's settled volume in its quote token, as {f['name']} reports it"
+               if VOLUME_BASIS.get(f["id"]) == "usd" else
+               "each book's turnover in its quote token, converted to dollars (USDC.B at $1, "
+               "other quote tokens at our price)")
+        if rows:
+            out.append({"kind": "book_volume", "title": ("Spot volume" if perps else "Volume") + " by market, 24h",
+                        "rows": rows,
+                        "sub": f"Last 24 hours, as of {when}: {how}. Markets under {floor} are summed as other."})
+    if perps:
+        rows = bar_rows([(f"{m['base']}/{m['quote']}", m["turnover_24h_usd"]) for m in perps], "market")
+        quotes = ", ".join(sorted({m["quote"] for m in perps}))
+        if rows:
+            out.append({"kind": "perp_volume", "title": ("Perps volume" if books else "Volume") + " by market, 24h",
+                        "rows": rows,
+                        "sub": f"Last 24 hours, as of {when}: turnover in each market's quote token ({quotes}), "
+                               f"counted at $1. Markets under {floor} are summed as other."})
+        rows = bar_rows([(f"{m['base']}/{m['quote']}", m["open_interest_usd"]) for m in perps], "market")
+        if rows:
+            out.append({"kind": "open_interest", "title": "Open interest by market", "rows": rows,
+                        "sub": f"Now, as of {when}: open contracts at mark price. "
+                               f"Markets under {floor} are summed as other."})
+    return out
+
+
+def now_html(f: dict, t: int) -> str:
+    """The "Right now" section: the dashboard's horizontal bars (its spread-study rows), drawn here."""
+    charts = now_charts(f, t)
+    if not charts:
+        return ""
+    panels = []
+    for c in charts:
+        top = max(r["value"] for r in c["rows"]) or 1
+        bars = "".join(
+            f'<div class="hrow{" other" if r.get("other") else ""}" tabindex="0" '
+            f'title="{e(r["label"] + (": " + ", ".join(r["names"]) if r.get("other") else ""))}, {e(money(r["value"]))}">'
+            f'<span class="hl">{e(r["label"])}</span><span class="hb"><i style="width:{r["value"] / top * 100:.1f}%"></i></span>'
+            f'<span class="hn num">{e(money(r["value"]))}</span></div>' for r in c["rows"])
+        panels.append(f'<div class="panel"><h3>{e(c["title"])}</h3><p class="sub">{e(c["sub"])}</p>'
+                      f'<div class="hbars">{bars}</div></div>')
+    return f"""  <section class="block">
+    <h2>Right now</h2>
+    <div class="charts" style="margin-top:14px">{"".join(panels)}</div>
+  </section>"""
 
 
 def spark_svg(vals: list[float], w: int = 136, h: int = 44) -> str:
@@ -1419,7 +1530,7 @@ def charts_html(f: dict) -> tuple[str, str]:
         return "", ""
     panels = "".join(f'<div class="panel"><h3>{e(s["title"])}</h3><p class="sub">{e(s["sub"])}</p>'
                      f'<div class="tchart" id="ch{n}"></div></div>' for n, s in enumerate(series))
-    data = json.dumps([{"pts": s["pts"], "fmt": s["fmt"], "empty": s.get("empty")} for s in series],
+    data = json.dumps([{"pts": s["pts"], "fmt": s["fmt"]} for s in series],
                       separators=(",", ":")).replace("</", "<\\/")
     section = f"""  <section class="block">
     <h2>History</h2>
@@ -1433,7 +1544,7 @@ def charts_html(f: dict) -> tuple[str, str]:
 {chart}
 const SERIES = {data};
 const FMT = {{ money: money, pct: (v) => (v * 100).toFixed(1) + "%" }};
-window.charts = function () {{ SERIES.forEach((s, n) => lineChart("ch" + n, s.pts, FMT[s.fmt], {{ empty: s.empty, h: 200, color: "var(--accent)" }})); }};
+window.charts = function () {{ SERIES.forEach((s, n) => lineChart("ch" + n, s.pts, FMT[s.fmt], {{ h: 200, color: "var(--accent)" }})); }};
 window.charts();
 let rz; addEventListener("resize", () => {{ clearTimeout(rz); rz = setTimeout(window.charts, 150); }});"""
     return section, script
@@ -1540,6 +1651,8 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         f'<div class="stat"><div class="k">{e(k)}</div><div class="v num">{e(val)}</div></div>' for k, val in st)
         + "</div>")
 
+    if now := now_html(f, t):
+        parts.append(now)
     charts, script = charts_html(f)
     if charts:
         parts.append(charts)
