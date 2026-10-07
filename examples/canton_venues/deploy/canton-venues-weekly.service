@@ -1,0 +1,13 @@
+[Unit]
+Description=Canton Venues weekly card: the last seven finished UTC days, page + share card (read-only, no keys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/canton-venues/.venv/bin/python weekly.py --api /var/www/canton-venues/api/v1 --out /var/www/canton-venues
+TimeoutStartSec=1200
+MemoryMax=200M
+CPUQuota=25%

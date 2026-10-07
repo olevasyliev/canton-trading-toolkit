@@ -25,7 +25,8 @@ ssh "$SERVER" "
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png /var/www/canton-venues/
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service current/examples/canton_venues/deploy/canton-venues-contact.service \
     current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer \
-    current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer /etc/systemd/system/
+    current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer \
+    current/examples/canton_venues/deploy/canton-venues-weekly.service current/examples/canton_venues/deploy/canton-venues-weekly.timer /etc/systemd/system/
   # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
   if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then
     install -m 644 current/examples/canton_venues/deploy/nginx.conf /etc/nginx/sites-available/canton-venues
@@ -40,6 +41,9 @@ ssh "$SERVER" "
   systemctl is-enabled canton-venues-study.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-study.timer
   # the daily cross-check timer, enabled once like the study's (OnCalendar, not Persistent: enabling never fires it)
   systemctl is-enabled canton-venues-crosscheck.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-crosscheck.timer
+  # the weekly card's timer, the same way (OnCalendar, not Persistent). Its first card appears on its
+  # first run; deploy does not run it
+  systemctl is-enabled canton-venues-weekly.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-weekly.timer
   systemctl restart canton-venues canton-venues-mcp canton-venues-contact
   sleep 3
   systemctl is-active canton-venues canton-venues-mcp canton-venues-contact

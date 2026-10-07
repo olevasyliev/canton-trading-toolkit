@@ -1,0 +1,14 @@
+[Unit]
+Description=Redraw the Canton Venues weekly card after each UTC day closes
+
+[Timer]
+# 00:20: the first run after the collector's next slow refresh past midnight (every 15 min), so the
+# card is fresh from the start of the day; 06:20: again, once late settlements and DefiLlama's
+# refills of the closed day are in. Each run rewrites only the period that ends at that midnight.
+OnCalendar=*-*-* 00:20:00 UTC
+OnCalendar=*-*-* 06:20:00 UTC
+Persistent=false
+Unit=canton-venues-weekly.service
+
+[Install]
+WantedBy=timers.target
