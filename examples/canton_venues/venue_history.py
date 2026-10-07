@@ -77,9 +77,12 @@ def merge_daily(old: list, new: list, now: int) -> list:
 
 
 def set_daily(state: dict, slug: str, source: str, points: list, now: int) -> None:
+    """Merge a fresh read of a venue's daily record. ``t`` is when it was read: the weekly card
+    (weekly.py) counts a day only from a read made after that day ended, since an outside record
+    shows the running day as a partial figure until it closes."""
     prev = (state.setdefault("daily", {}).get(slug) or {})
     keep = prev.get("points") if prev.get("source") == source else []
-    state["daily"][slug] = {"source": source, "points": merge_daily(keep, points, now)}
+    state["daily"][slug] = {"source": source, "t": int(now), "points": merge_daily(keep, points, now)}
 
 
 def record_hourly(state: dict, now: int, facts: dict[str, dict]) -> bool:

@@ -626,7 +626,8 @@ class Collector:
         tc_pools = await self.tradecraft.pools()
         self.fresh["cantex"] = now  # read every tick: a failed read fails the tick
         self.unpriced = []
-        if self.tick_no % SLOW_EVERY == 0 or not self.slow:
+        slow = self.tick_no % SLOW_EVERY == 0 or not self.slow
+        if slow:
             markets = await self.cantex.markets()
             await self._refresh_slow(tc_states, markets)
         cx_volume = await self.cantex.volume()
@@ -701,7 +702,9 @@ class Collector:
                  "perps": {"t": now, "markets": perps}, "summary": summary}
         try:  # one hourly reading of every venue's figures, for its page's charts
             live = {s: f for s, f in venue_pages.facts(pages).items() if f["status"] in venue_pages.LIVE}
-            if venue_history.record_hourly(self.vhist, now, live):
+            # written on every slow refresh too, so the weekly card (weekly.py, its own timer) reads the
+            # daily record within minutes of a UTC day closing, not up to an hour later
+            if venue_history.record_hourly(self.vhist, now, live) or slow:
                 write_json(self.api / "venue_history.json", self.vhist)
         except Exception:  # noqa: BLE001
             log.exception("venue history")
