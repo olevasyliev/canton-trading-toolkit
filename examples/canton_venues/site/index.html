@@ -570,6 +570,13 @@ async function load() {
   got.forEach((g, i) => { if (g.status === "fulfilled") D[names[i]] = g.value; });
   if (!D.summary) { $("gstrip").textContent = "Market data is unavailable right now"; return; }
   render();
+  // a link like /#contact scrolls before the data is drawn; Safari does not keep the place while the
+  // sections above grow, so go to the section again once, after the first render
+  if (!load.landed) {
+    load.landed = true;
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (id && !id.startsWith("t/")) requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView());
+  }
 }
 const premOf = (key) => (D.premium?.assets || []).find((a) => a.key === key && a.status === "ok");
 

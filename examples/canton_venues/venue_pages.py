@@ -707,7 +707,7 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
                 "Pool fees, price impact and network fees included", (c["next"], None, c["won"] / c["of"]),
                 c["won"], fmt=lambda n: "", big=f"{c['won']} of {c['of']}",
                 short=f"Best price on {TRADE_KIND.get(kind, 'trades')} at {label}",
-                cap=f"{TRADE_KIND.get(kind, 'Trades').capitalize()} at {label} where it gives the most back, "
+                cap=f"{_upper_first(TRADE_KIND.get(kind, 'trades'))} at {label} where it gives the most back, "
                     "pool fees, price impact and network fees included")
     if r := _lead(tok_count, i):
         add("tokens", "The most tokens", f"{tok_count[i]} tokens with $1K or more of liquidity", r, tok_count[i],
@@ -1522,6 +1522,10 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
 PLAIN = ("pools", "read")  # headlines that rank nothing and open with the venue's own name
 
 
+def _upper_first(text: str) -> str:
+    return text[:1].upper() + text[1:]  # "CC trades" stays CC, unlike str.capitalize
+
+
 def _lower_first(text: str) -> str:
     return text[:1].lower() + text[1:]
 
@@ -1838,6 +1842,23 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         f'<div class="stat"><div class="k">{e(k)}</div><div class="v num">{e(val)}</div></div>' for k, val in st)
         + "</div>")
 
+    # the share card right under the figures, where a visitor who came from a post sees it
+    handle = (f'<a class="btn" href="https://x.com/{e(v["x"])}" target="_blank" rel="noopener">{X_ICON}@{e(v["x"])}</a>'
+              if v.get("x") else "")
+    parts.append(f"""  <section class="block">
+    <h2>Share {e(f['name'])}</h2>
+    <p class="sub">The card updates with the data. Shared on X, it shows as the preview.</p>
+    <div class="vtop">
+    <img class="vcard" src="card.png?v={cv}" width="1200" height="630" alt="{e(f['name'])}: {e(head['title'])}. {e(head['sub'])}.">
+    <div class="acts">
+      <a class="btn x" href="{e(intent_url(f, head))}" target="_blank" rel="noopener">{X_ICON}Share on X</a>
+      <a class="btn" href="card.png?v={cv}" download="canton-venues-{e(v['slug'])}.png">Download card</a>
+      <a class="btn" href="{e(v['site'])}" target="_blank" rel="noopener">{e(v['site'].split('//')[1])} ↗</a>
+      {handle}
+    </div>
+  </div>
+  </section>""")
+
     if now := now_html(f, t):
         parts.append(now)
     charts, script = charts_html(f)
@@ -1907,21 +1928,6 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     <div class="panel">{_table([("Market", "l"), ("Price", ""), ("Basis", ""), ("Funding", ""), ("Spread", ""), ("Open interest", ""), ("Volume (24h)", "")], rows)}</div>
   </section>""")
 
-    handle = (f'<a class="btn" href="https://x.com/{e(v["x"])}" target="_blank" rel="noopener">{X_ICON}@{e(v["x"])}</a>'
-              if v.get("x") else "")
-    parts.append(f"""  <section class="block">
-    <h2>Share {e(f['name'])}</h2>
-    <p class="sub">The card updates with the data. Shared on X, it shows as the preview.</p>
-    <div class="vtop">
-    <img class="vcard" src="card.png?v={cv}" width="1200" height="630" alt="{e(f['name'])}: {e(head['title'])}. {e(head['sub'])}.">
-    <div class="acts">
-      <a class="btn x" href="{e(intent_url(f, head))}" target="_blank" rel="noopener">{X_ICON}Share on X</a>
-      <a class="btn" href="card.png?v={cv}" download="canton-venues-{e(v['slug'])}.png">Download card</a>
-      <a class="btn" href="{e(v['site'])}" target="_blank" rel="noopener">{e(v['site'].split('//')[1])} ↗</a>
-      {handle}
-    </div>
-  </div>
-  </section>""")
 
     method = f["method"] + [x for x in card_method(f, head) if x not in f["method"]]
     notes = "".join(f"<li>{e(n)}</li>" for n in method)
