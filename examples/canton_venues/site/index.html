@@ -897,7 +897,20 @@ function costBps(pair, r, v) {
 function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))); const n = raw / p; return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p; }
 function roundSize(v) { const p = Math.pow(10, Math.floor(Math.log10(v)) - 1); return Math.round(v / p) * p; }
 function execVenues(pair) { return pair.venues || ["cantex", "tradecraft"]; }
-function execCost(pair, r, v) { return r.cost_bps ? r.cost_bps[v] ?? null : costBps(pair, r, v); }
+function grossCost(pair, r, v) { return r.cost_bps ? r.cost_bps[v] ?? null : costBps(pair, r, v); }
+/* every figure after each venue's network fee when the row has it (out_net), else as quoted */
+const netOut = (r) => r.out_net || r.out, netBest = (r) => r.best_net || r.best;
+const netEdge = (r) => r.out_net ? r.edge_net_bps : r.edge_bps;
+function execCost(pair, r, v) {
+  const c = grossCost(pair, r, v); if (c == null || !r.out_net) return c;
+  const n = r.out_net[v], o = r.out[v]; if (n == null || !o) return null;
+  return (1 - (1 - c / 10000) * n / o) * 10000;
+}
+function feeNote(v) {
+  const f = (D.execution.network_fee || {})[v]; if (!f) return "";
+  const amount = f.unit === "usd" ? money(f.point) : `${amt(f.point)} CC`;
+  return f.basis === "assumed" ? `${amount} assumed` : amount;
+}
 function renderExecution() {
   const pair = execPair(); if (!pair) return;
   S.pair = pair.key;
@@ -912,7 +925,7 @@ function renderExecution() {
     : (S.side === "sell" ? `Selling CC for ${sym}` : `Buying CC with ${sym}`);
   const vn = (v) => `<b style="color:${VC[v]}">${V[v]}</b>`;
   const segs = [];
-  rows.forEach((r) => { const last = segs[segs.length - 1]; if (last && last.v === r.best) last.to = r.size_usd; else segs.push({ v: r.best, from: r.size_usd, to: r.size_usd }); });
+  rows.forEach((r) => { const b = netBest(r), last = segs[segs.length - 1]; if (last && last.v === b) last.to = r.size_usd; else segs.push({ v: b, from: r.size_usd, to: r.size_usd }); });
   const span = (g) => g.from === g.to ? usdSize(g.from) : `${usdSize(g.from)} to ${usdSize(g.to)}`;
   $("verdict").innerHTML = segs.length === 1 ? `${flow}: ${vn(segs[0].v)} fills better at every size from ${usdSize(rows[0].size_usd)} to ${usdSize(rows[rows.length - 1].size_usd)}.`
     : `${flow}: ` + segs.map((g) => `${vn(g.v)} at ${span(g)}`).join(", ") + ".";
@@ -922,10 +935,12 @@ function renderExecution() {
   const fmt = (v, u) => v == null ? '<span class="muted">book too thin</span>' : u === "$" ? money(v) : `${amt(v)} ${esc(u)}`;
   $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${usd && pair.swaps?.[v] === 2 ? '<span class="muted"> via CC</span>' : ""}</th>`).join("")}<th class="hide-sm">Beats next best by</th></tr></thead><tbody>` +
     rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b>${inU === "$" ? "" : ` <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span>`}</td>
-      ${vs.map((v) => `<td class="num" style="${r.best === v ? `color:${VC[v]};font-weight:700` : ""}">${fmt(r.out[v], outU)}</td>`).join("")}
-      <td class="num hide-sm">${V[r.best]} +${(r.edge_bps / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
+      ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}`)}"` : ""}>${fmt(netOut(r)[v], outU)}</td>`).join("")}
+      <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
   $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. ${Object.entries(pair.books || {}).map(([v, b]) => `${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}`).join("; ")}. Cost is measured against the Canton price.`
-    : "Pool fees and price impact included, network fees excluded on both sides.";
+    : "Pool fees and price impact included.";
+  const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
+  if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.join(", ")} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
 }
 function drawExec(pair, rows, xs) {
   const st = $("stage"), W = Math.max(280, st.clientWidth), narrow = W < 560, vs = execVenues(pair);

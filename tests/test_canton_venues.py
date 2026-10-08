@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -80,8 +82,8 @@ def test_scan_deducts_the_network_cost_before_a_route_clears():
                   "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}}
     routes = m.scan(flat, Decimal("0.12"))
     assert routes and not any(r["clears"] for r in routes)
-    # one swap on each venue: Cantex at its measured 0.86 CC, Tradecraft at the 1.5 CC assumption
-    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - 2.36) for r in routes)
+    # one swap on each venue: Cantex at its measured 0.86 CC, Tradecraft at its documented $0.10
+    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - 0.86 - 0.10 / 0.12) for r in routes)
 
     skew = {"X": {"cantex": cantex_pool("X", 1_000_000, 1_000_000),
                   "tradecraft": tc_pool("X", 1_000_000, 900_000)}}
@@ -221,13 +223,14 @@ def test_usd_scan_only_adds_trips_that_touch_the_book():
     assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
     # a pool route is two swaps (its CC/USDCx leg costed as Cantex), the book one: three a trip
-    cost = {frozenset(("cantex", "rocky")): 0.86 * 2 + 1.5, frozenset(("tradecraft", "rocky")): 1.5 + 0.86 + 1.5}
+    cost = {frozenset(("cantex", "rocky")): 0.86 * 2 + 1.5, frozenset(("tradecraft", "rocky")): 0.10 / 0.122 + 0.86 + 1.5}
     assert all(r["cost_cc"] == pytest.approx(cost[frozenset((r["buy_on"], r["sell_on"]))]) for r in rows)
 
 
 def test_swap_cost_uses_a_venues_own_stated_fee():
     assert m.swap_cost_cc("cantex", Decimal("0.125")) == Decimal("0.86")  # measured
-    assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("1.5")  # assumed
+    assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("0.8")  # documented $0.10
+    assert m.swap_cost_cc("rocky", Decimal("0.125")) == Decimal("1.5")  # assumed
     assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal(14)  # $1.75 at $0.125
 
 
@@ -251,3 +254,28 @@ def test_spread_study_counts_one_episode_per_standing_spread():
     assert run["episodes"] == 2 and run["pools_changed"] == 1 and run["stable_episodes"] == 1
     assert run["capture_usd"] == 2.9  # each spread taken once, at its best
     assert sorted(t["life_s"] for t in run["top"]) == [20, 40]
+
+
+def test_execution_rows_carry_figures_net_of_each_venues_network_fee():
+    pools = {"cantex": cantex_pool("USDCx", 1_600_000, 196_000),
+             "tradecraft": tc_pool("USDCx", 6_000_000, 735_000)}
+    rows = m.ladder(pools, Decimal("0.1225"), Decimal("0.1225"))
+    r = next(x for x in rows if x["side"] == "sell" and x["size_usd"] == 100)
+    # selling CC returns USDCx at $1: the fee comes off in dollars, Cantex 0.86 CC, Tradecraft $0.10
+    assert r["out_net"]["cantex"] == pytest.approx(r["out"]["cantex"] - 0.86 * 0.1225)
+    assert r["out_net"]["tradecraft"] == pytest.approx(r["out"]["tradecraft"] - 0.10)
+    assert r["best_net"] == max(r["out_net"], key=r["out_net"].get)
+    assert m.fee_known("tradecraft") and not m.fee_known("poolparty")
+
+
+def test_execution_history_keeps_one_sample_an_hour(tmp_path):
+    import exec_history
+    pairs = [{"key": "USDCX", "rows": [{"side": "sell", "size_usd": 100, "best": "cantex", "edge_bps": 3.0,
+                                        "best_net": "tradecraft", "edge_net_bps": 1.5}]}]
+    t0 = 1_791_400_000
+    assert exec_history.record(tmp_path, t0, pairs, m.fee_table_json())
+    assert not exec_history.record(tmp_path, t0 + 600, pairs, m.fee_table_json())
+    assert exec_history.record(tmp_path, t0 + 3600, pairs, m.fee_table_json())
+    lines = [json.loads(x) for f in sorted(tmp_path.glob("*.jsonl")) for x in f.read_text().splitlines()]
+    assert len(lines) == 2 and lines[0]["rows"][0] == ["USDCX", "sell", 100, "cantex", 3.0, "tradecraft", 1.5]
+    assert lines[0]["network_fee"]["tradecraft"]["point"] == 0.10

@@ -69,8 +69,7 @@ def summarize(samples: list[dict], step: int) -> dict:
         "top": [{"token": e["key"].split(":")[0], "buy": e["key"].split(":")[1].split(">")[0],
                  "sell": e["key"].split(">")[1], "life_s": e["life_s"], "net": round(e["net"], 2),
                  "size": round(e["size"])} for e in sorted(done, key=lambda e: -e["net"])[:5]],
-        "swap_cost_cc": {v: float(m.SWAP_COST_CC_MEASURED.get(v, m.SWAP_COST_CC))
-                         for v in ("cantex", "tradecraft", "poolparty", "rocky")} | {"oneswap_usd": 1.75},
+        "network_fee": m.fee_table_json(),
     }
 
 

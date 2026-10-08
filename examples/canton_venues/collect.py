@@ -33,6 +33,7 @@ from pathlib import Path
 
 import alerts as al
 import digest
+import exec_history
 import httpx
 import model as m
 import venue_history
@@ -121,8 +122,10 @@ def r(x, n=6):
 
 
 class Collector:
-    def __init__(self, out: Path) -> None:
+    def __init__(self, out: Path, state: Path | None = None) -> None:
         self.out = out
+        # records kept off the web root: the hourly best-execution history (exec_history.py)
+        self.state = state or out.with_name(out.name + "-state")
         self.api = out / "api" / "v1"
         self.cantex = CantexPublicData()
         self.tradecraft = TradecraftAdapter()
@@ -665,7 +668,7 @@ class Collector:
         dollar = {k: m.DollarRoutes(books[k], stable, b, usdcx_usd) for k, b in ob_books.items()}
         cc_pairs = self._execution(books, cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
-        execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices) + cc_pairs[1:]
+        execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices, cc_usd) + cc_pairs[1:]
         scan = m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd)
         for k, routes in dollar.items():
             scan += m.usd_scan(k, routes, cc_usd)
@@ -680,7 +683,11 @@ class Collector:
         write_json(self.api / "tokens.json", {"t": now, "tokens": tokens})
         write_json(self.api / "premium.json", {"t": now, "assets": premium})
         write_json(self.api / "execution.json", {"t": now, "sizes_usd": list(m.SIZES_USD),
-                                                  "pairs": execution})
+                                                  "network_fee": m.fee_table_json(), "pairs": execution})
+        try:
+            exec_history.record(self.state / "exec", now, execution, m.fee_table_json())
+        except Exception:  # noqa: BLE001
+            log.exception("execution history")
         write_json(self.api / "scan.json", {"t": now, "round_trip_cost_cc": float(m.ROUND_TRIP_COST_CC),
                                             "swap_cost_cc": {v: float(m.swap_cost_cc(v, cc_usd)) for v in
                                                              ("cantex", "tradecraft", "oneswap", "poolparty", "rocky",
@@ -921,11 +928,11 @@ class Collector:
             })
         return sorted(out, key=lambda p: (p["key"] != USDCX, p["key"]))
 
-    def _usd_execution(self, books, dollar, prices) -> list[dict]:
+    def _usd_execution(self, books, dollar, prices, cc_usd) -> list[dict]:
         """Tokens that also trade on an order book: every venue against dollars."""
         out = []
         for sym, routes in sorted(dollar.items()):
-            rows = m.usd_ladder(routes, prices[sym])
+            rows = m.usd_ladder(routes, prices[sym], cc_usd)
             out.append({
                 "key": sym + ":USD", "kind": "usd", "token": sym,
                 "symbol": next(iter(books[sym].values())).token,
@@ -937,6 +944,10 @@ class Collector:
 
     def _paper(self, books, cc_usd, scan, now) -> None:
         router = self.desk["router"]
+        if router.get("v") != 2:
+            # v1 (to 2026-10-08) picked and scored fills before network fees; v2 nets each venue's
+            # fee (model.NETWORK_FEE) first. The record restarts at the change.
+            router = self.desk["router"] = {"v": 2, "fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}}
         pools = books.get(USDCX, {})
         side = "sell" if router["n"] % 2 == 0 else "buy"
         fill = m.route_order(pools, side, m.ROUTER_SIZE_USD, cc_usd,
@@ -1023,10 +1034,11 @@ async def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--interval", type=int, default=300)
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--state", type=Path, help="private records (default: <out>-state, beside the web root)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    c = Collector(args.out)
+    c = Collector(args.out, args.state)
     await c.start()
     try:
         while True:

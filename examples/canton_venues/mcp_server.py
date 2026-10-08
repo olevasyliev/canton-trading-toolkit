@@ -79,8 +79,8 @@ server = MCPServer(
         "Market data for Canton Network DEXes, refreshed every five minutes. Prices are in USD. "
         "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: it prices "
         "the pools from live reserves, routes token-to-token trades through CC, and adds the Temple and Rocky "
-        "order books where the pair trades there. Network fees "
-        "(about 1 CC per Cantex swap) are not included in quotes. Nothing here executes a trade."
+        "order books where the pair trades there. quote() outputs are before network fees; each "
+        "venue's per-trade network fee comes with every quote (network_fees). Nothing here executes a trade."
     ),
     website_url=SITE,
     version="1.0.0",
@@ -162,7 +162,9 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     priced from live reserves on Cantex and Tradecraft. Shows every venue's output per leg; a
     token-to-token trade routes through CC with each leg on its best venue. When the pair also trades
     on an order book (Temple and Rocky: CBTC/USDCx, eXAU/USDCx, eXAG/USDCx, cETH/USDC.B) the same trade is priced there too, and `best`
-    says which wins. Pool fees and price impact are included, network fees are not."""
+    says which wins. Pool fees and price impact are included; network fees are not, and each venue's
+    per-trade fee is returned in `network_fees` (unit, best estimate, range, and whether it is measured,
+    documented or assumed)."""
     books, cc_usd = _books()
     if (amount is None) == (amount_usd is None):
         raise ToolError("give exactly one of amount or amount_usd")
@@ -188,7 +190,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
 
     out = {"sell": names.get(r["sell"], r["sell"]), "buy": names.get(r["buy"], r["buy"]), "amount_in": _r(r["amount_in"], 10),
            "amount_out": _r(r["amount_out"], 10), "legs": [leg(L) for L in r["legs"]],
-           "as_of": load("pools")["t"], "network_fees": "excluded (about 1 CC per Cantex swap)"}
+           "as_of": load("pools")["t"], "network_fees": {"included": False, "per_trade": m.fee_table_json()}}
     book = _book_quote(m.key(sell), m.key(buy), Decimal(str(amount)))
     if book:
         out["order_book"] = book

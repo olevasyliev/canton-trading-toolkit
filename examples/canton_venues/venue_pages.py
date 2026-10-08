@@ -115,20 +115,14 @@ CLEAR_EDGE_BPS = 10
 # A best price leads only at this trade size or larger: under it a per-swap network fee we cannot
 # see is too large a share of the trade for any edge to mean much.
 MIN_PRICE_LEAD_USD = 1_000
-# Per-swap network fees we know, as (unit, low, high). The leader is charged the high end and the
+# Per-trade network fees we know, as (unit, low, high), from the one table in model.NETWORK_FEE: only a
+# measured or documented fee; an assumed one is left out. The leader is charged the high end and the
 # runner-up the low end, so a best-price lead survives the least favourable reading.
-#   oneswap  docs.oneswap.cc: "typically around $1.5-2 at recent network prices" (model.SWAP_COST_USD)
-#   cantex   measured: median of 96 authenticated quotes, 2026-10-03 (model.SWAP_COST_CC_MEASURED)
-#   tradecraft  low: docs.tradecraft.fi/fees-and-pricing, "Gas: $0.10" on a $200 and a $50K swap
-#            (marked illustrative). High: its DAR guide sizes an immediate swap at ~23 kB, at
-#            MainNet's 60 USD/MB traffic price that is $1.38 with no free burst left; CIP-0078 set
-#            CC transfer fees to 0, so traffic is the whole network cost. Checked 2026-10-08.
 # A venue missing here never leads on price: its own fee is unknown, so no edge can be shown to
 # survive it. As a runner-up it is charged nothing (the low end of an unknown range), which only
 # makes the leader's edge harder to clear.
-NETWORK_FEE = {"oneswap": ("usd", 1.5, 2.0), "tradecraft": ("usd", 0.10, 1.40),
-               "cantex": ("cc", float(model.SWAP_COST_CC_MEASURED["cantex"]),
-                          float(model.SWAP_COST_CC_MEASURED["cantex"]))}
+NETWORK_FEE = {v: (u, float(lo), float(hi)) for v, (u, _, lo, hi, basis) in model.NETWORK_FEE.items()
+               if basis != "assumed"}
 
 # DefiLlama's Canton DEX list: the outside source that says which venues trade on Canton at all.
 # INTERNAL ONLY: it gates "on Canton" (``_on_canton``) and is never named in a headline, card,

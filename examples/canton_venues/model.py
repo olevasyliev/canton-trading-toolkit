@@ -134,6 +134,17 @@ def runner_up_bps(outs: dict) -> float:
     return edge_bps(top[0], top[1]) if len(top) == 2 else 0.0
 
 
+def net_of_fees(outs: dict, fee_usd: dict, out_price_usd: Decimal) -> dict:
+    """What each venue returns after its network fee: ``fee_usd`` in dollars, taken off in the output
+    token at ``out_price_usd`` per unit. ``out_net``, ``best_net`` and ``edge_net_bps`` for a row."""
+    net = {v: o - fee_usd[v] / out_price_usd for v, o in outs.items() if o is not None and o > 0}
+    net = {v: n for v, n in net.items() if n > 0}
+    return {"fee_usd": {v: float(f) for v, f in fee_usd.items()},
+            "out_net": {v: float(n) for v, n in net.items()},
+            "best_net": max(net, key=net.get) if net else None,
+            "edge_net_bps": runner_up_bps(net) if net else 0.0}
+
+
 def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> list[dict]:
     """What each venue returns at each size, both directions.
 
@@ -147,6 +158,8 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
             amount = cc_amount if side == "sell" else cc_amount * mid
             outs = {v: p.out(side == "sell", amount) for v, p in pools.items()}
             best = max(outs, key=outs.get)
+            # what one unit received is worth: the token on a sell (``mid`` per CC), CC on a buy
+            out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
             rows.append({
                 "side": side,  # sell = sell CC for the token, buy = buy CC with it
                 "size_usd": size,
@@ -154,17 +167,19 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
                 "out": {v: float(o) for v, o in outs.items()},
                 "best": best,
                 "edge_bps": runner_up_bps(outs),
+                **net_of_fees(outs, {v: network_fee_usd(v, cc_in_usd) for v in outs}, out_usd),
             })
     return rows
 
 
 def crossover_usd(rows: list[dict], side: str, a: str, b: str) -> list[float]:
     """Dollar sizes where the better of venues a and b flips (log-interpolated)."""
-    pts = [r for r in rows if r["side"] == side and a in r["out"] and b in r["out"]]
+    key = lambda r: r.get("out_net") or r["out"]  # noqa: E731  (after network fees when known)
+    pts = [r for r in rows if r["side"] == side and a in key(r) and b in key(r)]
     out = []
     for r0, r1 in zip(pts, pts[1:]):
-        e0 = edge_bps(Decimal(str(r0["out"][a])), Decimal(str(r0["out"][b])))
-        e1 = edge_bps(Decimal(str(r1["out"][a])), Decimal(str(r1["out"][b])))
+        e0 = edge_bps(Decimal(str(key(r0)[a])), Decimal(str(key(r0)[b])))
+        e1 = edge_bps(Decimal(str(key(r1)[a])), Decimal(str(key(r1)[b])))
         if e0 == 0 or e1 == 0 or (e0 > 0) == (e1 > 0):
             continue
         l0, l1 = math.log(r0["size_usd"]), math.log(r1["size_usd"])
@@ -236,22 +251,54 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
 
 # Network cost of one swap on Canton, the same assumption as ROUND_TRIP_COST_CC (3 CC for two).
 SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
-# Venues that state their own per-swap network fee, in dollars. OneSwap's docs: "typically around
-# $1.5-2 at recent network prices"; the midpoint is used.
-SWAP_COST_USD = {"oneswap": Decimal("1.75")}
-# Measured per-swap network fee in CC. Cantex: median of 96 authenticated quotes over two hours on
-# 2026-10-03 (0.67 EDELx to 1.20 CC/USDCx). Venues missing here keep the SWAP_COST_CC assumption.
-SWAP_COST_CC_MEASURED = {"cantex": Decimal("0.86")}
+# The network fee a trader pays per trade on each venue, on top of its trading or pool fee: the one
+# table every figure reads (best execution, the scanner, the paper desk, venue headlines). Each entry
+# is (unit, point, low, high, basis): "usd" or "cc"; ``point`` is the best estimate every net figure
+# uses, ``low``/``high`` the range a best-price claim must survive; basis "measured", "documented" or
+# "assumed". Only a measured or documented fee can carry a best-price claim; an assumed one fills the
+# net figures and is shown as an assumption. Replace an entry when it is measured from our own trades.
+NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
+    # median of 96 authenticated quotes over two hours, 2026-10-03 (0.67 EDELx to 1.20 CC/USDCx)
+    "cantex": ("cc", Decimal("0.86"), Decimal("0.86"), Decimal("0.86"), "measured"),
+    # docs.oneswap.cc: "typically around $1.5-2 at recent network prices"
+    "oneswap": ("usd", Decimal("1.75"), Decimal("1.5"), Decimal("2.0"), "documented"),
+    # docs.tradecraft.fi/fees-and-pricing "Gas: $0.10" (illustrative); high end: its DAR guide sizes an
+    # immediate swap at ~23 kB, $1.38 at MainNet's 60 USD/MB with no free burst left. Checked 2026-10-08.
+    "tradecraft": ("usd", Decimal("0.10"), Decimal("0.10"), Decimal("1.40"), "documented"),
+    # Temple and Rocky trade from a deposited balance and settle on the trader's behalf (Rocky in
+    # 5-second batches); neither states a per-trade network cost (checked 2026-10-08). Pool Party shows
+    # a per-swap "Network fee" in its app, only to a signed-in wallet. All three: the default assumption.
+    "temple": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
+    "rocky": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
+    "poolparty": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
+}
 # The CC/USDCx leg of a dollar route is costed as a Cantex swap (its deepest stable pool).
 STABLE_LEG_VENUE = "cantex"
 
 
+_ASSUMED = ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed")
+
+
+def network_fee_usd(venue: str, cc_in_usd: Decimal, end: str = "point") -> Decimal:
+    """One trade's network fee on ``venue`` in dollars: its best estimate, or the low or high end."""
+    unit, point, lo, hi, _ = NETWORK_FEE.get(venue, _ASSUMED)
+    amount = {"low": lo, "high": hi}.get(end, point)
+    return amount * cc_in_usd if unit == "cc" else amount
+
+
+def fee_known(venue: str) -> bool:
+    return venue in NETWORK_FEE and NETWORK_FEE[venue][4] != "assumed"
+
+
+def fee_table_json() -> dict:
+    return {v: {"unit": u, "point": float(pt), "low": float(lo), "high": float(hi), "basis": b}
+            for v, (u, pt, lo, hi, b) in NETWORK_FEE.items()}
+
+
 def swap_cost_cc(venue: str, cc_in_usd: Decimal) -> Decimal:
-    """Network cost of one swap on ``venue``, in CC."""
-    usd = SWAP_COST_USD.get(venue)
-    if usd is not None:
-        return usd / cc_in_usd
-    return SWAP_COST_CC_MEASURED.get(venue, SWAP_COST_CC)
+    """Network cost of one swap on ``venue``, in CC (its best estimate)."""
+    unit, point, *_ = NETWORK_FEE.get(venue, _ASSUMED)
+    return point if unit == "cc" else point / cc_in_usd
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
 BOOK_TAKER_FEE = {"rocky": Decimal("0.00025"),
@@ -347,7 +394,7 @@ class DollarRoutes:
         return usdcx * self.usdcx_usd
 
 
-def usd_ladder(routes: DollarRoutes, price_usd: Decimal) -> list[dict]:
+def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> list[dict]:
     """What each venue returns at each dollar size: tokens when buying, dollars when selling."""
     rows = []
     for side in ("buy", "sell"):
@@ -366,6 +413,10 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal) -> list[dict]:
                 "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
                 "best": best,
                 "edge_bps": runner_up_bps(filled),
+                # a pool route is two swaps: the venue's own and the CC/USDCx leg (costed as Cantex)
+                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) + (network_fee_usd(STABLE_LEG_VENUE, cc_in_usd)
+                                                                         if routes.swaps(v) == 2 else 0)
+                                       for v in filled}, price_usd if side == "buy" else Decimal(1)),
             })
     return rows
 
@@ -430,11 +481,14 @@ def route_order(pools: dict[str, VenuePool], side: str, size_usd: int,
         return None
     cc_amount = Decimal(size_usd) / cc_in_usd
     amount = cc_amount if side == "sell" else cc_amount * mid
-    outs = {v: p.out(side == "sell", amount) for v, p in pools.items()}
+    gross = {v: p.out(side == "sell", amount) for v, p in pools.items()}
+    # each venue after its own network fee, so the pick and the gap are what a trader keeps
+    out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
+    outs = {v: o - network_fee_usd(v, cc_in_usd) / out_usd for v, o in gross.items()}
     # against the runner-up, not the worst: with four venues the worst is a straw man
     best, worst = sorted(outs, key=outs.get, reverse=True)[:2]
     extra = outs[best] - outs[worst]
-    extra_usd = extra * (cc_in_usd / mid if side == "sell" else cc_in_usd)
+    extra_usd = extra * out_usd
     return {
         "side": side,
         "amount_in": float(amount),
@@ -451,7 +505,8 @@ def router_stats(fills: list[dict]) -> dict:
     """The honest headline: the median gap between venues on one order, not a running sum.
 
     Summing the gap to the worse venue overstates: these are paper fills on pools that never
-    move, without network fees, against a venue a careful trader would not have picked anyway.
+    move, against a venue a careful trader would not have picked anyway. Fills are net of each
+    venue's network fee (``route_order``).
     """
     if not fills:
         return {}
