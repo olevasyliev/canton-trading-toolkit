@@ -1358,6 +1358,14 @@ def _tracker() -> str:
     return re.search(r"^/\* -+ conversions:.*?^\}\)\(\);$", src, re.DOTALL | re.MULTILINE).group(0)
 
 
+def site_nav() -> str:
+    """The dashboard's own section menu, its in-page links pointed back at the dashboard, so every
+    page carries the same menu and a change to it is made once, in site/index.html."""
+    src = (HERE / "site" / "index.html").read_text()
+    links = re.search(r'<nav class="nav" id="nav"[^>]*>\s*(.*?)\s*</nav>', src, re.DOTALL).group(1)
+    return links.replace('href="#', 'href="/#')
+
+
 def nav_venues(prefix: str = "/") -> str:
     """The "Venues" menu: every venue page and the index. The dashboard carries the same block,
     written out in site/index.html (a test keeps the two equal)."""
@@ -1487,7 +1495,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
   <div class="wrap">
     <a class="logo" href="/">{logo} Canton Venues</a>
     <nav class="nav" id="nav" aria-label="Sections">
-      <a href="/">Dashboard</a>{nav_venues()}<a href="/weekly/">This week</a><a href="/#tokens">Tokens</a><a href="/#execution">Execution</a><a href="/#api">API &amp; MCP</a><a class="sec" href="/#perps">Perps</a><a class="sec" href="/#contact">Contact</a>
+      {site_nav()}
     </nav>
     <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
