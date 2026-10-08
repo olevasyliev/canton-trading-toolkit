@@ -1434,7 +1434,7 @@ NAV_JS = """
 (function () {
   var b = document.getElementById("theme"), h = document.querySelector(".head"), m = document.getElementById("burger");
   var dd = document.getElementById("ddvenues"), ddb = dd.querySelector(".ddb");
-  function label() { var d = document.documentElement.getAttribute("data-theme") === "dark"; b.innerHTML = (d ? SUN : MOON) + (d ? "<span>Light</span>" : "<span>Dark</span>"); }
+  function label() { var d = document.documentElement.getAttribute("data-theme") === "dark"; b.innerHTML = d ? SUN : MOON; b.title = d ? "Light theme" : "Dark theme"; }
   label();
   b.addEventListener("click", function () {
     var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
@@ -1493,7 +1493,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
   <div class="wrap">
     <a class="logo" href="/">{logo} Canton Venues</a>
     <nav class="nav" id="nav" aria-label="Sections">
-      <a href="/">Dashboard</a>{nav_venues()}<a href="/weekly/">This week</a><a href="/#tokens">Tokens</a><a href="/#execution">Execution</a><a href="/#perps">Perps</a><a href="/#api">API &amp; MCP</a><a href="/#contact">Contact</a>
+      <a href="/">Dashboard</a>{nav_venues()}<a href="/weekly/">This week</a><a href="/#tokens">Tokens</a><a href="/#execution">Execution</a><a href="/#api">API &amp; MCP</a><a class="sec" href="/#perps">Perps</a><a class="sec" href="/#contact">Contact</a>
     </nav>
     <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <button class="theme" id="theme" type="button" aria-label="Switch theme"></button>
