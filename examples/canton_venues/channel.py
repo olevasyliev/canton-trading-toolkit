@@ -208,3 +208,68 @@ def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: i
     lines += ["", "Read every five minutes from Canton pools and order books.",
               f'🔗 <a href="{SITE}/#premium">Live premiums</a>']
     return Post("pegs", "\n".join(lines))
+
+
+# === preview ===============================================================
+
+def preview(api: Path, out: Path, state: Path, now: int) -> list[Post]:
+    """Every kind built from today's data, whatever the weekday; the execution post with whatever
+    history there is. For a look at the formats, never for the channel."""
+    def load(p: Path, default):
+        try:
+            return json.loads(p.read_text())
+        except (OSError, ValueError):
+            return default
+
+    tokens = load(api / "tokens.json", {}).get("tokens", [])
+    w = load(api / "weekly.json", None)
+    card_v = {p.parent.name: int(p.stat().st_mtime) for p in (out / "venues").glob("*/card.png")}
+    published = load(out / "venues" / "published.json", {})
+    posts = []
+    if w:
+        posts.append(weekly_post(w, datetime.fromisoformat(w["slug"]).replace(tzinfo=UTC) + timedelta(days=1)))
+    turn = 0
+    for _ in range(2):
+        post, turn = venue_post(published, turn, card_v)
+        posts.append(post)
+    samples = read_exec(state / "exec", now)
+    posts.append(execution_post(samples) if len(samples) >= MIN_EXEC_HOURS else
+                 execution_post(samples * MIN_EXEC_HOURS) if samples else None)
+    posts.append(pegs_post(load(api / "history.json", {}), tokens, {t["key"]: t["symbol"] for t in tokens}, now))
+    return [p for p in posts if p]
+
+
+def main() -> None:
+    """Send ``preview`` to the founder's chat (CONTACT_CHAT_ID, the contact form's), not the channel.
+
+        python channel.py --api /var/www/canton-venues/api/v1 --out /var/www/canton-venues
+    """
+    import argparse
+    import os
+    import time
+
+    import httpx
+
+    ap = argparse.ArgumentParser(description="Send one of each channel post to the founder's chat.")
+    ap.add_argument("--api", type=Path, required=True)
+    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--state", type=Path, help="default: <out>-state")
+    args = ap.parse_args()
+    state = args.state or args.out.with_name(args.out.name + "-state")
+    token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("CONTACT_CHAT_ID")
+    if not (token and chat):
+        raise SystemExit("TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID are needed")
+    for post in preview(args.api, args.out, state, int(time.time())):
+        body = f"[preview: {post.kind}]\n\n{post.html}"
+        # the URL carries the bot token: never print it or the response
+        if post.photo:
+            resp = httpx.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={
+                "chat_id": chat, "photo": post.photo, "caption": body, "parse_mode": "HTML"}, timeout=30)
+        else:
+            resp = httpx.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
+                "chat_id": chat, "text": body, "parse_mode": "HTML", "disable_web_page_preview": "true"}, timeout=30)
+        print(post.kind, resp.status_code)
+
+
+if __name__ == "__main__":
+    main()
