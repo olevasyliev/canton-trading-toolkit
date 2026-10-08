@@ -1070,3 +1070,12 @@ def test_publish_guard_does_not_watch_a_count_of_trades():
     import publish_guard as pg
     figs = pg.card_figures({}, {"rule": "best_count", "value": 6}, [])
     assert not any(k.startswith("headline:") for k in figs)
+
+
+def test_every_generated_page_reports_the_dashboards_conversion_events(tmp_path):
+    pytest.importorskip("PIL")
+    vp.build(tmp_path, data(), T)
+    tracker = vp._tracker()
+    assert 'track(k, { place: place(a)' in tracker and 'track("copy"' in tracker
+    pages = list(tmp_path.rglob("index.html"))
+    assert len(pages) > 2 and all(tracker in p.read_text() for p in pages)

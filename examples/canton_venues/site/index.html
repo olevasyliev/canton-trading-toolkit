@@ -1074,6 +1074,36 @@ $("contactform").addEventListener("submit", async (e) => {
   btn.disabled = false;
 });
 
+/* ---------- conversions: one Umami event per click that leaves, shares or takes the data ---------- */
+(function () {
+  function kind(a) {
+    var h = a.getAttribute("href") || "";
+    if (a.hasAttribute("download")) return "card-download";
+    if (/^https:\/\/t\.me\//.test(h)) return "telegram";
+    if (/^https:\/\/x\.com\/intent\//.test(h)) return "share-x";
+    if (/^https:\/\/x\.com\//.test(h)) return "venue-x";
+    if (/^https:\/\/github\.com\/olevasyliev\/canton-venues-sdk/.test(h)) return "sdk";
+    if (/^https:\/\/github\.com\//.test(h)) return "github";
+    if (/api\/v1\/[\w-]+\.json$/.test(h)) return "api-json";
+    if (/^https?:\/\//.test(h) && a.host !== location.host) return "outbound";
+    return "";
+  }
+  function place(el) {
+    var s = el.closest("header, footer, section[id]");
+    return !s ? "page" : s.id || s.tagName.toLowerCase();
+  }
+  function track(name, data) { try { window.umami && window.umami.track(name, data); } catch (err) {} }
+  document.addEventListener("click", function (ev) {
+    var a = ev.target.closest && ev.target.closest("a[href]");
+    var k = a && kind(a);
+    if (k) track(k, { place: place(a), href: a.getAttribute("href").slice(0, 200) });
+  }, true);
+  document.addEventListener("copy", function () {
+    var n = document.getSelection().anchorNode, pre = n && (n.nodeType === 1 ? n : n.parentElement).closest("pre.curl");
+    if (pre) track("copy", { what: /\/mcp$/.test(pre.textContent.trim()) ? "mcp" : "curl" });
+  });
+})();
+
 /* ---------- wide tables: fade the edge they scroll to ---------- */
 function markWide() {
   document.querySelectorAll(".tablewrap").forEach((w) => {

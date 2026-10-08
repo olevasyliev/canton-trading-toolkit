@@ -1349,6 +1349,13 @@ def _site_parts() -> tuple[str, str, str, str]:
     return style, logo, icons, chart.replace(" · ", ", ")
 
 
+def _tracker() -> str:
+    """The dashboard's conversion tracker (Telegram, shares, card downloads, API and MCP), so every
+    generated page reports the same Umami events."""
+    src = (HERE / "site" / "index.html").read_text()
+    return re.search(r"^/\* -+ conversions:.*?^\}\)\(\);$", src, re.DOTALL | re.MULTILINE).group(0)
+
+
 def nav_venues(prefix: str = "/") -> str:
     """The "Venues" menu: every venue page and the index. The dashboard carries the same block,
     written out in site/index.html (a test keeps the two equal)."""
@@ -1496,6 +1503,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
 <script>
 {icons}
 {NAV_JS}
+{_tracker()}
 {script}
 </script>
 </body>
