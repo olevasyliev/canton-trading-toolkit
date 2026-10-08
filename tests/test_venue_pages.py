@@ -125,13 +125,8 @@ def test_no_headline_or_card_tile_ranks_venues_on_price_across_sizes():
         assert "best execution" not in h["title"].lower() and " from $" not in h["title"]
         assert not any(p["k"].startswith("Best price") for p in vp.stats(f))
     # a single quote won clearly is still a fact, named by direction and size, once the leader's own
-    # network fee is known (Tradecraft's is not, so it is given a known one here)
-    assert not vp.facts(d)["tradecraft"]["leads"]
-    vp.NETWORK_FEE["tradecraft"] = ("usd", 0.1, 0.1)
-    try:
-        lead = vp.facts(d)["tradecraft"]["leads"][0]
-    finally:
-        del vp.NETWORK_FEE["tradecraft"]
+    # network fee is known (Tradecraft's: $0.10-1.40, its fee page and its swap size)
+    lead = vp.facts(d)["tradecraft"]["leads"][0]
     assert lead["rule"] == "best_quote" and lead["title"] == "Best price to buy USDCx with CC at $50K"
 
 
@@ -604,7 +599,7 @@ def _edel(d, size, out):
 
 
 def test_a_venue_whose_own_network_fee_is_unknown_never_leads_on_price():
-    assert "poolparty" not in vp.NETWORK_FEE and "tradecraft" not in vp.NETWORK_FEE
+    assert "poolparty" not in vp.NETWORK_FEE
     # Pool Party 2% ahead of Tradecraft at $10K: a clear quote, but Pool Party's fee is unknown
     f = _edel(data(), 10_000, {"poolparty": 1.02, "tradecraft": 1.0})
     assert not any(x["rule"] == "best_quote" for x in f["pool-party"]["leads"])
@@ -928,15 +923,12 @@ def test_a_count_of_trades_won_beats_one_quote_and_needs_a_known_fee():
     assert head["rule"] == "best_count" and head["title"] == "Best price on 6 of 6 CC trades at $10K"
     assert head["sub"] == "Pool fees, price impact and network fees included" and not vp.is_ranked(head)
     assert "#1" not in vp.lead_html(f, head) and head["big"] == "6 of 6"
-    # the same trades won by Tradecraft: its own network fee is unknown, so no price fact at all
-    f = vp.facts(_with_trades(data(), "tradecraft"))["tradecraft"]
+    # the same trades won by Pool Party: its own network fee is unknown, so no price fact at all
+    f = vp.facts(_with_trades(data(), "poolparty"))["pool-party"]
     assert not any(x["rule"] in ("best_count", "best_quote") for x in f["leads"])
     assert f["counts"][("cc", 10_000)]["won"] >= 6  # counted, and ready once the fee is known
-    vp.NETWORK_FEE["tradecraft"] = ("usd", 0.1, 0.1)
-    try:
-        rules = [x["rule"] for x in vp.facts(_with_trades(data(), "tradecraft"))["tradecraft"]["leads"]]
-    finally:
-        del vp.NETWORK_FEE["tradecraft"]
+    # Tradecraft's fee is known ($0.10-1.40)
+    rules = [x["rule"] for x in vp.facts(_with_trades(data(), "tradecraft"))["tradecraft"]["leads"]]
     # a whole-venue ranking (its pool liquidity) still outranks a count of trades
     assert rules[0] == "tvl" and "best_count" in rules
 
