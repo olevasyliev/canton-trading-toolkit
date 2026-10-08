@@ -55,10 +55,33 @@ def test_fire_on_crossing_then_quiet_then_cooldown():
     assert [f["key"] for f in state["feed"]] == ["peg:X:above", "peg:X:above"]
 
 
-def test_batch_windows_and_grouping():
-    assert al.next_batch_time(0) == 4 * 3600
-    assert al.next_batch_time(4 * 3600) == 8 * 3600
-    html = al.batch_html([{"kind": "route", "html": "r1"}, {"kind": "peg", "html": "p1"},
-                          {"kind": "peg", "html": "p2"}], 0)
-    assert html.index("Stablecoins off peg") < html.index("Spreads that cleared")
-    assert "• p1" in html and "• p2" in html and "• r1" in html and "Big moves" not in html
+def test_only_loud_alerts_reach_the_channel():
+    scan = [{"token": "X", "buy_on": "cantex", "sell_on": "tradecraft", "size_usd": 900,
+             "net_usd": 1.2, "clears": True},
+            {"token": "Y", "buy_on": "cantex", "sell_on": "tradecraft", "size_usd": 5000,
+             "net_usd": 40.0, "clears": True}]
+    got = {a.key: a.loud for a in al.evaluate(TOKENS, PREMIUM, scan, {"EDELX": 0.0340})}
+    # USDXLR 1.1% off in a $170K pool, CC 2% vs the world, a $40 spread: loud. A $1.20 spread is site-only.
+    assert got == {"peg:USDXLR:above": True, "premium:CC:below": True, "route:Y:cantex": True,
+                   "route:X:cantex": False, "move:EDELX:up": True}
+
+
+def test_moves_of_tokens_with_an_outside_price_stay_off_the_channel():
+    tokens = [{"key": "EXAU", "symbol": "eXAU", "liquidity_usd": 800_000, "price_usd": 5000}]
+    [a] = al.evaluate(tokens, [], [], {"EXAU": 4000})
+    assert a.kind == "move" and not a.loud
+
+
+def test_channel_caps_a_day_and_keeps_its_own_crossing():
+    a, b, c = (al.Alert(f"route:{k}:x", "route", k, k, loud=True) for k in "ABC")
+    quiet = al.Alert("route:Q:x", "route", "q", "q")
+    state = {}
+    day = 10 * 86400
+    assert al.channel(state, [a, quiet], day + 100) == [a]
+    assert al.channel(state, [a, b, c], day + 400) == [b]       # a still true; c past the cap of 2
+    assert al.channel(state, [], day + 700) == []
+    assert al.channel(state, [c], day + 3600) == []             # c inside its cooldown from the drop
+    assert al.channel(state, [], day + 3700) == []
+    d = al.Alert("peg:D:above", "peg", "d", "<b>D</b>", loud=True)
+    assert al.channel(state, [c, d], day + 86400 + 30) == [c, d]  # a new day: the cap resets
+    assert "💵 <b>D</b>" in al.channel_html([d])

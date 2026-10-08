@@ -28,11 +28,12 @@ import logging
 import os
 import statistics
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import alerts as al
-import digest
+import channel
 import exec_history
 import httpx
 import model as m
@@ -722,7 +723,7 @@ class Collector:
         except Exception:  # one bad page must not fail the tick
             log.exception("venue pages")
         await self._alerts(tokens, premium, scan, now)
-        await self._daily(summary, tokens, premium)
+        await self._morning(tokens)
         self.tick_no += 1
         log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no,
                  len(tokens), sum(len(v) > 1 for v in books.values()),
@@ -746,39 +747,63 @@ class Collector:
             state.setdefault("feed", [])
             write_json(path, state)
             return
-        new = al.fire(state, current, now)
-        # the channel gets one batch per window, not a message per alert
-        state.setdefault("pending", []).extend({"kind": a.kind, "html": a.html} for a in new)
-        if now >= state.get("next_batch", 0):
-            batch, state["pending"] = state["pending"], []
-            state["next_batch"] = al.next_batch_time(now)
-            write_json(path, state)  # recorded before sending: a failed send never duplicates
-            if batch:
-                await self._telegram(al.batch_html(batch, now))
-        else:
-            write_json(path, state)
+        al.fire(state, current, now)  # the site's feed: every alert
+        for k in ("pending", "next_batch"):  # the 4-hour batches, before 2026-10-08
+            state.pop(k, None)
+        if "channel" not in state:  # the channel's first run: what is already loud is not news
+            state["channel"] = {"active": sorted(a.key for a in current if a.loud)}
+        loud = al.channel(state.setdefault("channel", {}), current, now)
+        write_json(path, state)  # recorded before sending: a failed send never duplicates
+        if loud:
+            await self._telegram(al.channel_html(loud))
 
-    async def _daily(self, summary, tokens, premium) -> None:
-        path = self.api / "daily.json"
-        state = load_json(path, {"notes": []})
-        now = digest.today()
-        if not digest.due(state, now):
+    async def _morning(self, tokens) -> None:
+        """The channel's post of the day (channel.py): its kind follows the weekday."""
+        path = self.state / "channel.json"
+        state = load_json(path, {})
+        now = datetime.now(UTC)
+        if not state:  # first run: start with tomorrow's post, not one at whatever hour this deploys
+            write_json(path, {"date": now.date().isoformat(), "posts": []})
             return
-        html = digest.compose(summary, tokens, premium, self.desk, now)
-        state["daily_date"] = now.date().isoformat()
-        state["notes"] = (state["notes"] + [{"t": int(now.timestamp()), "html": html}])[-30:]
+        kind = channel.due(state, now)
+        if kind is None:
+            return
+        t = int(now.timestamp())
+        post = None
+        try:
+            if kind == "weekly":
+                post = channel.weekly_post(load_json(self.api / "weekly.json", None), now)
+            elif kind == "venue":
+                card_v = {p.parent.name: int(p.stat().st_mtime) for p in (self.out / "venues").glob("*/card.png")}
+                post, state["venue_turn"] = channel.venue_post(
+                    load_json(self.out / "venues" / "published.json", {}), state.get("venue_turn", 0), card_v)
+            elif kind == "execution":
+                post = channel.execution_post(channel.read_exec(self.state / "exec", t))
+            elif kind == "pegs":
+                post = channel.pegs_post(self.history, tokens, {x["key"]: x["symbol"] for x in tokens}, t)
+        except Exception:  # noqa: BLE001
+            log.exception("channel post %s", kind)
+        state["date"] = now.date().isoformat()
+        state["posts"] = (state.get("posts", []) + [{"t": t, "kind": kind, "sent": post is not None}])[-60:]
         write_json(path, state)  # recorded before sending: a failed send is not retried into a duplicate
-        await self._telegram(html)
+        if post is None:
+            log.info("channel: nothing to post for %s today", kind)
+            return
+        await self._telegram(post.html, post.photo)
 
-    async def _telegram(self, body: str) -> None:
+    async def _telegram(self, body: str, photo: str | None = None) -> None:
         token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
         if not (token and chat):
             return
         try:
             # the URL carries the bot token: never log it (httpx is at WARNING)
-            resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
-                "chat_id": chat, "text": body, "parse_mode": "HTML",
-                "disable_web_page_preview": "true"})
+            if photo:  # Telegram fetches the image from our site; the text goes as its caption
+                resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={
+                    "chat_id": chat, "photo": photo, "caption": body, "parse_mode": "HTML"})
+            else:
+                resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
+                    "chat_id": chat, "text": body, "parse_mode": "HTML",
+                    "disable_web_page_preview": "true"})
             if resp.status_code != 200:
                 log.warning("telegram: HTTP %s", resp.status_code)
         except httpx.HTTPError as exc:

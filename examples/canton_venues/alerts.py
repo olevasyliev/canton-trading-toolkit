@@ -3,11 +3,18 @@
 An alert fires when a condition becomes true, not on every tick it stays true,
 and the same alert stays quiet for ``COOLDOWN_S`` after firing. Thin pools are
 skipped: a $6K pool off its peg is noise, not news.
+
+Every alert goes to the site's feed. The Telegram channel gets only the loud
+ones (``Alert.loud``, the ``LOUD_*`` bars), as they happen, at most
+``CHANNEL_PER_DAY`` a UTC day: before 2026-10-08 it got every alert in 4-hour
+batches, 300 in three and a half days, mostly $1-4 spreads.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from model import REFERENCES, STABLES
 
 PEG_LIMIT = 0.005        # a stablecoin more than 0.5% from $1
 PREMIUM_LIMIT = 0.01     # an asset more than 1% from its outside price
@@ -15,6 +22,13 @@ MOVE_LIMIT = 0.05        # a token moving more than 5% in an hour
 MIN_LIQUIDITY_USD = 20_000
 COOLDOWN_S = 6 * 3600
 KEEP = 300
+# the channel's bars: 4 of 192 spreads cleared $25 net between 5 and 8 Oct; one stablecoin in a
+# $100K+ pool went past 1%
+LOUD_LIQUIDITY_USD = 100_000
+LOUD_PEG = 0.01
+LOUD_PREMIUM = 0.015
+LOUD_ROUTE_USD = 25
+CHANNEL_PER_DAY = 2
 EMOJI = {"peg": "💵", "premium": "🌍", "move": "⚡️", "route": "🔁"}
 
 
@@ -24,6 +38,7 @@ class Alert:
     kind: str    # peg | premium | route | move
     text: str    # one line, plain text
     html: str    # the same line for Telegram (parse_mode=HTML)
+    loud: bool = False  # big enough for the channel
 
 
 def pct(f: float) -> str:
@@ -47,12 +62,14 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
             side = "above" if p > 0 else "below"
             out.append(Alert(f"peg:{a['key']}:{side}", "peg",
                              f"{s} is {pct(p)} off its $1 peg on Canton (${a['canton_usd']:.4f}).",
-                             f"<b>{s}</b> is <b>{pct(p)}</b> off its $1 peg on Canton (${a['canton_usd']:.4f})."))
+                             f"<b>{s}</b> is <b>{pct(p)}</b> off its $1 peg on Canton (${a['canton_usd']:.4f}).",
+                             abs(p) > LOUD_PEG and liq.get(a["key"], 0) >= LOUD_LIQUIDITY_USD))
         elif a["kind"] == "reference" and abs(p) > PREMIUM_LIMIT:
             side = "above" if p > 0 else "below"
             out.append(Alert(f"premium:{a['key']}:{side}", "premium",
                              f"{s} trades {pct(p)} vs {a['reference']} on Canton.",
-                             f"<b>{s}</b> trades <b>{pct(p)}</b> vs {a['reference']} on Canton."))
+                             f"<b>{s}</b> trades <b>{pct(p)}</b> vs {a['reference']} on Canton.",
+                             abs(p) > LOUD_PREMIUM and (a["key"] == "CC" or liq.get(a["key"], 0) >= LOUD_LIQUIDITY_USD)))
     for r in scan:
         if r.get("clears"):
             name = sym.get(r["token"], r["token"])
@@ -60,7 +77,8 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
                              f"{name}: buy on {r['buy_on'].title()}, sell on {r['sell_on'].title()}, "
                              f"${r['size_usd']:,.0f} nets ${r['net_usd']:.2f} after costs.",
                              f"<b>{name}</b>: buy on {r['buy_on'].title()}, sell on "
-                             f"{r['sell_on'].title()}, ${r['size_usd']:,.0f} nets <b>${r['net_usd']:.2f}</b> after costs."))
+                             f"{r['sell_on'].title()}, ${r['size_usd']:,.0f} nets <b>${r['net_usd']:.2f}</b> after costs.",
+                             r["net_usd"] >= LOUD_ROUTE_USD))
     for t in tokens:
         before, now = price_hour_ago.get(t["key"]), t.get("price_usd")
         if not before or not now or liq.get(t["key"], 0) < MIN_LIQUIDITY_USD:
@@ -70,7 +88,11 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
             side = "up" if move > 0 else "down"
             out.append(Alert(f"move:{t['key']}:{side}", "move",
                              f"{sym[t['key']]} {pct(move)} in the last hour on Canton DEXes.",
-                             f"<b>{sym[t['key']]}</b> <b>{pct(move)}</b> in the last hour on Canton DEXes."))
+                             f"<b>{sym[t['key']]}</b> <b>{pct(move)}</b> in the last hour on Canton DEXes.",
+                             # a token with an outside price shows a real move as a premium; a big hourly
+                             # move without one (eXAU +25% then -20% on 6 Oct) is a thin quote, not news
+                             liq.get(t["key"], 0) >= LOUD_LIQUIDITY_USD and t["key"] not in REFERENCES
+                             and t["key"] not in STABLES))
     return out
 
 
@@ -98,28 +120,18 @@ def fire(state: dict, current: list[Alert], now: int) -> list[Alert]:
     return new
 
 
-BATCH_HOURS = 4
+def channel(state: dict, current: list[Alert], now: int) -> list[Alert]:
+    """The loud alerts to post now; updates ``state`` (its own crossing and cooldown, apart from the
+    site's, so an alert that was quiet and grows loud still reaches the channel) in place. Past the
+    day's cap the rest are dropped, not queued: they are on the site."""
+    new = fire(state, [a for a in current if a.loud], now)
+    day = now - now % 86400
+    sent = [t for t in state.get("sent", []) if t >= day]
+    out = new[:max(0, CHANNEL_PER_DAY - len(sent))]
+    state["sent"] = sent + [now] * len(out)
+    return out
 
 
-def next_batch_time(now: int) -> int:
-    """The next window boundary (00, 04, 08 ... UTC) after ``now``."""
-    step = BATCH_HOURS * 3600
-    return (now // step + 1) * step
-
-
-def batch_html(batch: list[dict], now: int) -> str:
-    """Every alert of the window in one message, grouped by kind."""
-    titles = {"peg": "Stablecoins off peg", "premium": "Premium to world prices",
-              "move": "Big moves", "route": "Spreads that cleared costs"}
-    lines = [f"🔔 <b>Canton DEX alerts</b>, last {BATCH_HOURS}h", ""]
-    for kind in ("peg", "premium", "move", "route"):
-        items = [a["html"] for a in batch if a["kind"] == kind]
-        if not items:
-            continue
-        lines.append(f"{EMOJI[kind]} <b>{titles[kind]}</b>")
-        lines += [f"• {h}" for h in items[:8]]
-        if len(items) > 8:
-            lines.append(f"• and {len(items) - 8} more")
-        lines.append("")
-    lines.append('🔗 <a href="https://cantonvenues.com/#alerts">cantonvenues.com</a>')
-    return "\n".join(lines)
+def channel_html(alerts: list[Alert]) -> str:
+    lines = [f"{EMOJI[a.kind]} {a.html}" for a in alerts]
+    return "\n".join(lines + ["", '🔗 <a href="https://cantonvenues.com/#alerts">Live alerts</a>'])
