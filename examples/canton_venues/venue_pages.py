@@ -880,6 +880,10 @@ def headline(f: dict) -> dict:
         return {"rule": "read", "title": f"{f['name']} on Canton",
                 "sub": f"{n} tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity",
                 "value": None, "big": str(n), "cap": f"Tokens with {money(MIN_LIQUIDITY_USD)} or more of liquidity"}
+    if f.get("perp_volume"):  # a perps-only venue between leads (its market count flips around 1K a day)
+        return {"rule": "read", "title": f"{f['name']} on Canton",
+                "sub": f"{short_money(f['perp_volume'])} of perpetuals traded in the last 24 hours",
+                "value": None, "big": short_money(f["perp_volume"]), "cap": "Perpetuals traded in the last 24 hours"}
     return {"rule": "read", "title": f"{f['name']} on Canton", "sub": f["kind"], "value": None}
 
 

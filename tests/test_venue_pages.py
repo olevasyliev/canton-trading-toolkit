@@ -1071,3 +1071,10 @@ def test_every_generated_page_reports_the_dashboards_conversion_events(tmp_path)
     assert 'track(k, { place: place(a)' in tracker and 'track("copy"' in tracker
     pages = list(tmp_path.rglob("index.html"))
     assert len(pages) > 2 and all(tracker in p.read_text() for p in pages)
+
+
+def test_a_perps_venue_without_a_lead_still_says_what_it_trades():
+    f = {"name": "Ekiden", "kind": "Perpetuals", "venue": {}, "leads": [], "perp_volume": 104_457.8}
+    head = vp.headline(f)
+    assert head["title"] == "Ekiden on Canton"
+    assert head["sub"] == "$104K of perpetuals traded in the last 24 hours" and head["big"] == "$104K"
