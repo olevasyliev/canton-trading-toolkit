@@ -458,7 +458,7 @@ def test_a_best_price_lead_must_survive_known_network_fees():
         "cantex": {"liquidity_usd": 50_000}, "oneswap": {"liquidity_usd": 100_000}}})
     lead = next(x for x in vp.facts(d)["oneswap"]["leads"] if x["rule"] == "best_quote")
     assert lead["title"] == "Best price to buy HANDL with CC at $1K"
-    assert lead["sub"].endswith("pool fees and price impact included, network fees excluded")
+    assert lead["sub"].endswith("pool fees, price impact and network fees included")
     # 71 bp quoted; OneSwap charged its $2 network fee (20 bp at $1K), Cantex 0.86 CC at $0.12 (1 bp)
     assert lead["margin"] * 10_000 == pytest.approx(71 - 20 + 1, abs=1)
     # 25 bp quoted is gone once OneSwap's fee is paid: not a lead
@@ -566,8 +566,10 @@ def test_page_lists_thin_tokens_apart_and_counts_only_the_rest(tmp_path):
 
 def test_best_price_sub_names_what_you_receive():
     row = {"symbol": "HANDL", "kind": "cc", "side": "sell", "edge_bps": 87.0}
-    assert vp.best_quote_sub(row) == ("0.87% more HANDL than the next best venue, pool fees and price "
-                                      "impact included, network fees excluded")
+    assert vp.best_quote_sub(row) == ("0.87% more HANDL than the next best venue, pool fees, price "
+                                      "impact and network fees included")
+    # with fee figures on the row, the edge shown is the one after each venue's network fee
+    assert vp.best_quote_sub({**row, "edge_after_fee_bps": 42.0}).startswith("0.42% more HANDL ")
     assert vp.best_quote_sub({**row, "side": "buy"}).startswith("0.87% more CC than the next best venue")
     assert vp.best_quote_sub({**row, "kind": "usd", "side": "sell"}).startswith("0.87% more dollars ")
     d = data()
@@ -1095,3 +1097,20 @@ def test_index_shows_perps_book_depth_and_leaves_what_a_venue_lacks_blank():
     assert vp.money(300_000) in row("Ekiden") and "perps book depth within 1%" in row("Ekiden")
     # Cantex has no perps: blank, not n/a; Rocky has perps but no open interest we can show: n/a
     assert "n/a" not in row("Cantex") and "n/a" in row("Rocky")
+
+
+def test_best_price_table_ranks_after_network_fees():
+    # OneSwap returns more as quoted, but its network fee leaves Cantex ahead: the page marks Cantex,
+    # as the dashboard does
+    d = data()
+    row = _row("sell", 1000, {"oneswap": 1.0071, "cantex": 1.0}, "oneswap")
+    row["out_net"] = {"oneswap": 0.9871, "cantex": 0.9990}
+    d["execution"]["pairs"].append({"key": "HANDL", "kind": "cc", "symbol": "HANDL", "venues": ["cantex", "oneswap"],
+                                    "rows": [row]})
+    d["tokens"]["tokens"].append({"symbol": "HANDL", "key": "HANDL", "venues": {
+        "cantex": {"liquidity_usd": 50_000}, "oneswap": {"liquidity_usd": 100_000}}})
+    f = vp.facts(d)
+    best = lambda v: [q["best"] for q in f[v]["quotes"] if q["symbol"] == "HANDL"]  # noqa: E731
+    assert best("cantex") == [True] and best("oneswap") == [False]
+    assert not any(x["rule"] == "best_quote" for x in f["oneswap"]["leads"])
+    assert "network fees are not" not in vp.best_price_html(f["cantex"])

@@ -453,14 +453,17 @@ def facts(data: dict) -> dict[str, dict]:
             for v in outs:
                 quoted.setdefault(k, {}).setdefault(v, 0)
                 quoted[k][v] += 1
-            ranked = sorted(outs, key=outs.get, reverse=True)
+            # ranked after each venue's network fee, as the dashboard ranks them (``out_net``, the
+            # fee's point estimate); a row without it ranks as quoted, and a venue the fee wipes out is 0
+            nets = ({v: r["out_net"].get(v, 0.0) for v in outs} if r.get("out_net") else dict(outs))
+            ranked = sorted(outs, key=nets.get, reverse=True)
             best, second = ranked[0], ranked[1]
             # every counted quote, per venue: whether it was the best one (a tie is nobody's)
             for v in outs:
                 quote_rows.setdefault(v, []).append(
                     {"symbol": p["symbol"], "key": key, "kind": p["kind"], "side": r["side"],
-                     "size": r["size_usd"], "best": v == best and outs[best] != outs[second]})
-            if outs[best] == outs[second]:
+                     "size": r["size_usd"], "best": v == best and nets[best] != nets[second]})
+            if nets[best] == nets[second] or nets[second] <= 0 and nets[best] <= 0:
                 continue
             wins.setdefault(k, {}).setdefault(best, 0)
             wins[k][best] += 1
@@ -468,6 +471,8 @@ def facts(data: dict) -> dict[str, dict]:
                 {"pair": pair_label(p, r["side"]), "kind": p["kind"], "symbol": p["symbol"],
                  "side": r["side"], "size": r["size_usd"], "out": outs[best], "next": second,
                  "next_out": outs[second], "edge_bps": (outs[best] / outs[second] - 1) * 10_000,
+                 "edge_after_fee_bps": ((nets[best] / nets[second] - 1) * 10_000 if nets[second] > 0
+                                        else None),
                  "real": best in real and second in real,
                  "net_edge_bps": net_edge_bps(best, second, outs[best], outs[second], r["size_usd"],
                                               swaps.get(best, 1), swaps.get(second, 1), cc_usd)})
@@ -637,11 +642,17 @@ def received(row: dict) -> str:
     return sym if row["side"] == "sell" else "CC"
 
 
+def quote_edge_bps(row: dict) -> float:
+    """The edge a page shows for one quote: after each venue's network fee, as the dashboard shows it,
+    or as quoted when the row has no fee figures."""
+    return row["edge_bps"] if row.get("edge_after_fee_bps") is None else row["edge_after_fee_bps"]
+
+
 def best_quote_sub(row: dict) -> str:
     """"0.87% more HANDL than the next best venue, ...": the edge is in what you receive, so it can
     never read as a higher price."""
-    return (f"{row['edge_bps'] / 100:.2f}% more {received(row)} than the next best venue, pool fees and "
-            "price impact included, network fees excluded")
+    return (f"{quote_edge_bps(row) / 100:.2f}% more {received(row)} than the next best venue, pool fees, "
+            "price impact and network fees included")
 
 
 TRADE_KIND = {"cc": "CC trades", "usd": "dollar trades"}
@@ -812,10 +823,10 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
         w = max(clear, key=lambda x: (x["size"], x["net_edge_bps"]))
         add("best_quote", f"Best price to {_direction(w)} at {SIZE_LABEL.get(w['size'], money(w['size']))}",
             best_quote_sub(w),
-            (w["next"], w["net_edge_bps"], w["net_edge_bps"] / 10_000), w["edge_bps"], fmt=lambda b: "",
-            big=f"+{w['edge_bps'] / 100:.2f}%",
-            cap=(f"More {received(w)} back than the next best venue, pool fees and price impact included, "
-                 "network fees excluded"))
+            (w["next"], w["net_edge_bps"], w["net_edge_bps"] / 10_000), quote_edge_bps(w), fmt=lambda b: "",
+            big=f"+{quote_edge_bps(w) / 100:.2f}%",
+            cap=(f"More {received(w)} back than the next best venue, pool fees, price impact and network "
+                 "fees included"))
     order = list(CATEGORIES)
     return sorted(out, key=lambda x: (-x["score"], order.index(x["rule"])))
 
@@ -1074,8 +1085,8 @@ METHOD = {
     "pair_volume": "Each pool's 24h volume across {tracked}; pools under $1K set aside.",
     "pair_apr": ("Fee APR: the last 24 hours of LP fees over liquidity, annualised, across {tracked}; pools "
                  "under $1K set aside."),
-    "best_quote": ("Best price: same amount on every venue, pool fees and price impact included, network fees "
-                   "excluded. A venue leads on price only at $1K or more, only when its own per-swap network "
+    "best_quote": ("Best price: same amount on every venue, pool fees, price impact and each venue's network "
+                   "fee included. A venue leads on price only at $1K or more, only when its own per-swap network "
                    "fee is documented or measured, and only when the edge survives that fee at the top of its "
                    "range with the runner-up charged the bottom of theirs."),
     "pools": "",
@@ -1520,7 +1531,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
 {body}
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a>, <a href="/#contact">contact</a></p><p>Updated {e(stamp(t))}.</p></div>
-    <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees and price impact included, network fees excluded. Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how.</p></div>
+    <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees, price impact and each venue's network fee included. Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how.</p></div>
     <div><h4>Data</h4><p>Every number on this page is in the open JSON API: <a href="/api/v1/venues.json">venues</a>, <a href="/api/v1/execution.json">execution</a>, <a href="/api/v1/tokens.json">tokens</a>, <a href="/api/v1/lp.json">pools</a>, <a href="/api/v1/perps.json">perps</a>, <a href="/api/v1/venue_history.json">venue history</a>.</p></div>
   </footer>
 </main>
@@ -1790,7 +1801,7 @@ def best_price_html(f: dict) -> str:
                      if (side, s) in g else '<span class="muted">n/a</span>' for s in sizes]
             rows.append([f'<a class="plain" href="/#t/{quote(key)}"><b>{e(_trade(sym, kind, side))}</b></a>'] + cells)
     lead = (f'<p class="sub">The same trade on every venue we track, at four sizes. <span class="best">Best</span> '
-            f"means {name} gives you the most back. Pool fees and price impact are included, network fees are not. "
+            f"means {name} gives you the most back. Pool fees, price impact and each venue's network fee are included. "
             f"A market with under {e(money(MIN_LIQUIDITY_USD))} of liquidity is left out. "
             f'<a href="/#execution">Compare every venue</a></p>')
     hdr = [("Trade", "l")] + [(SIZE_LABEL.get(s, money(s)), "") for s in sizes]
