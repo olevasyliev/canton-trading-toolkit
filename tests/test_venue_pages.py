@@ -923,7 +923,8 @@ def test_a_count_of_trades_won_beats_one_quote_and_needs_a_known_fee():
     head = vp.headline(f)
     assert head["rule"] == "best_count" and head["title"] == "Best price on 6 of 6 CC trades at $10K"
     assert head["sub"] == "Pool fees, price impact and network fees included" and not vp.is_ranked(head)
-    assert "#1" not in vp.lead_html(f, head) and head["big"] == "6 of 6"
+    # not a place in a ranking, but a majority of the trades won: shown as a win (founder, 2026-10-09)
+    assert '<b class="up">#1</b> Best price on CC trades at $10K' in vp.lead_html(f, head) and head["big"] == "6 of 6"
     # the same trades won by Pool Party: its own network fee is unknown, so no price fact at all
     f = vp.facts(_with_trades(data(), "poolparty"))["pool-party"]
     assert not any(x["rule"] in ("best_count", "best_quote") for x in f["leads"])
@@ -996,11 +997,11 @@ def test_no_outside_list_is_named_in_public_copy_but_its_charts_are_credited(tmp
         if "DefiLlama" in foot:
             assert f'<p class="fine">{vp.e(vp.HISTORY_CREDIT)}</p>' in page
     idx = (tmp_path / "venues" / "index.html").read_text()
-    head_part, _, foot = _main_text(idx).partition("Leads at:")
+    head_part, _, foot = _main_text(idx).partition("Strongest fact:")
     assert "llama" not in head_part.lower() and foot.count("DefiLlama") == 1
-    # the index's "Leads at" paragraph under the table never names the source; the credit is small print
+    # the index's "Strongest fact" paragraph under the table never names the source; the credit is small print
     body = idx.split("<main", 1)[1]
-    lead_p = re.search(r'<p class="sub"[^>]*>Leads at:.*?</p>', body, re.DOTALL).group(0)
+    lead_p = re.search(r'<p class="sub"[^>]*>Strongest fact:.*?</p>', body, re.DOTALL).group(0)
     assert "DefiLlama" not in lead_p
     fine = re.findall(r'<p class="fine">(.*?)</p>', body, re.DOTALL)
     assert sum("DefiLlama" in x for x in fine) == 1

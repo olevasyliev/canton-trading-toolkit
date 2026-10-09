@@ -898,13 +898,19 @@ def is_ranked(head: dict) -> bool:
     return head["rule"] in RANKED
 
 
+def is_win(head: dict) -> bool:
+    """Shown with a green #1: first in a ranking, or the best price on most of the trades compared
+    at one size (a majority is required before that fact exists at all)."""
+    return is_ranked(head) or head["rule"] == "best_count"
+
+
 def lead_html(f: dict, head: dict) -> str:
     """The page's lead: the figure large, a green #1 and the one line it leads at, a caption under it.
     No runner-up: we never name another venue in a venue's own public text."""
     big = head.get("big")
     if head["rule"] in PLAIN:
         line = ""
-    elif is_ranked(head):
+    elif is_win(head):
         line = f'<span class="vwin"><b class="up">#1</b> {e(head.get("short") or _short(head["title"]))}</span>'
     else:
         line = f'<span class="vwin">{e(head.get("short") or _short(head["title"]))}</span>'
@@ -1965,8 +1971,13 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
         f, h = all_facts[s], heads[s]
         # the lead shows once at any width: in its own column on a wide screen, under the name on a
         # phone (the column is hidden there, the tagline everywhere else)
-        lead = ("" if h["rule"] in PLAIN else
-                ('<b class="up">#1</b> ' if is_ranked(h) else "") + e(tag(h["title"])))
+        # a plain card has nothing it leads at: its pool count, muted, rather than a blank cell
+        if h["rule"] in PLAIN:
+            lead = f'<span class="muted">{e(pools_text(f))}</span>' if f.get("pools") else ""
+        elif h["rule"] == "best_count" and h.get("short"):
+            lead = '<b class="up">#1</b> ' + e(h["short"].replace("Best price on ", "Best price on most ", 1))
+        else:
+            lead = ('<b class="up">#1</b> ' if is_win(h) else "") + e(tag(h["title"]))
         name = (f'<a class="plain" href="{e(s)}/"><b>{e(f["name"])}</b></a>'
                 + (f'<div class="tagline">{lead}</div>' if lead else ""))
         if f.get("spot_volume") is not None:
@@ -2001,8 +2012,8 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
     coming = ", ".join(COMING)
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
   <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton DEX with public market data, live. Sorted by 24h volume; click one for its page, its history and a card to share.</p></div>
-  <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Leads at</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-  <p class="sub" style="margin-top:14px">Leads at: each venue's strongest fact, a ranking it tops by 10% or more or the trades it prices best after network fees, markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book.</p>{credit}
+  <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Strongest fact</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
+  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its CC pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book.</p>{credit}
   <section class="block">
     <h2>Coming to Canton Venues</h2>
     <p class="sub">Trading on Canton, no public market data yet: {e(coming)}. Run one of these? <a href="/#contact">Get in touch</a>.</p>
