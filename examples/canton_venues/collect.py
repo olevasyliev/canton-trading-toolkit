@@ -375,7 +375,7 @@ class Collector:
                     bid, ask = book.best_bid, book.best_ask
                     rows.append(self._perp_row("rocky_perp", t.symbol, mk.base, mk.quote, t.last_price,
                                                None, None, None, None, t.turnover_24h, bid, ask,
-                                               spot(mk.base)))
+                                               spot(mk.base), None))
                 self.fresh["rocky_perp"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("rocky_perp", exc)
@@ -384,9 +384,13 @@ class Collector:
             try:
                 for t in await ekiden.tickers():
                     base, _, quote = t.symbol.partition("-")
+                    # dollars resting within 1% of mid, the quote token counted at $1 like turnover
+                    book = await ekiden.order_book(t.symbol, 200)
+                    depth = (m.book_depth_usd(book.bids, book.asks, book.mid_price, Decimal(1))
+                             if book.mid_price else None)
                     rows.append(self._perp_row("ekiden", t.symbol, base, quote, t.last_price, t.mark_price,
                                                t.index_price, t.funding_rate, t.open_interest * t.mark_price,
-                                               t.turnover_24h, t.best_bid, t.best_ask, spot(base)))
+                                               t.turnover_24h, t.best_bid, t.best_ask, spot(base), depth))
                 self.fresh["ekiden"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("ekiden", exc)
@@ -394,7 +398,7 @@ class Collector:
 
     @staticmethod
     def _perp_row(venue, symbol, base, quote, last, mark, index, funding, oi_usd, turnover,
-                  bid, ask, spot_usd) -> dict:
+                  bid, ask, spot_usd, depth=None) -> dict:
         ref = mark if mark else last
         return {
             "venue": venue, "symbol": symbol, "base": base, "quote": quote,
@@ -405,6 +409,7 @@ class Collector:
             "turnover_24h_usd": r(turnover, 2),
             "bid": r(bid.price, 8) if bid else None, "ask": r(ask.price, 8) if ask else None,
             "spread_bps": r((ask.price / bid.price - 1) * 10_000, 2) if bid and ask else None,
+            "depth_1pct_usd": r(depth, 2) if depth is not None else None,
         }
 
     def _prices(self, books, cc_usd, ob) -> dict[str, Decimal]:

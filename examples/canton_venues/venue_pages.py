@@ -515,6 +515,13 @@ def facts(data: dict) -> dict[str, dict]:
             f["perp_mkt_rank"], f["perp_mkt_n"] = _rank(counts, perp_id)
             oi = [m["open_interest_usd"] for m in f["perp_markets"] if m["open_interest_usd"] is not None]
             f["open_interest"] = sum(oi) if oi else None
+            # a perps book's dollars within 1% of mid, its deepest market trading $1K+ a day (thin
+            # markets can carry a large resting quote nobody trades against)
+            deep = [x for x in f["perp_markets"] if x.get("depth_1pct_usd")
+                    and (x["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
+            if deep:
+                top = max(deep, key=lambda x: x["depth_1pct_usd"])
+                f["perp_depth"] = {"symbol": top["symbol"], "usd": top["depth_1pct_usd"]}
             if f["perp_volume"]:
                 f["method"].append(f"Perps volume: 24h turnover in each market's quote token "
                                    f"({', '.join(sorted({m['quote'] for m in f['perp_markets']}))}), counted at $1.")
@@ -1983,18 +1990,23 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
         if f.get("spot_volume") is not None:
             v24 = money(f["spot_volume"])
         elif f.get("perp_volume") is not None:  # perps-only: the Perps column already shows it
-            v24 = '<span class="muted">n/a</span>'
+            v24 = ""
         else:
             v24 = '<span class="muted">not published</span>'
-        perps = money(f["perp_volume"]) if f.get("perp_volume") is not None else '<span class="muted">n/a</span>'
+        # blank where the venue has no such thing (no perps, no open interest); n/a only where it has
+        # it and we cannot show it
+        perps = money(f["perp_volume"]) if f.get("perp_volume") is not None else ""
         if f.get("tvl") is not None:
             liq = money(f["tvl"])
         elif f.get("deepest") and f["deepest"].get("usd") and not f.get("keyed"):
             # an order book's resting dollars are not pool liquidity: labelled, never bare
             liq = f'{money(f["deepest"]["usd"])}<div class="muted depthnote">book depth within 1%</div>'
+        elif f.get("perp_depth"):
+            liq = f'{money(f["perp_depth"]["usd"])}<div class="muted depthnote">perps book depth within 1%</div>'
         else:
             liq = '<span class="muted">n/a</span>'
-        oi = money(f["open_interest"]) if f.get("open_interest") else '<span class="muted">n/a</span>'
+        oi = (money(f["open_interest"]) if f.get("open_interest") else
+              '<span class="muted">n/a</span>' if f.get("perp_id") else "")
         daily = next((x for x in f.get("series") or [] if x["kind"] == "daily"), None)
         spark = spark_svg([p[1] for p in daily["pts"][-30:]] if daily else [])
         rows.append(f'<tr class="click" data-href="{e(s)}/"><td class="l rank num">{n}</td><td class="l">{name}</td>'
@@ -2013,7 +2025,7 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
   <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton DEX with public market data, live. Sorted by 24h volume; click one for its page, its history and a card to share.</p></div>
   <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Strongest fact</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its CC pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book.</p>{credit}
+  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its CC pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book (for perps, among markets trading {e(money(MIN_PERP_TURNOVER_USD))}+ a day). A blank cell: the venue has no such market; n/a: it has one we cannot show.</p>{credit}
   <section class="block">
     <h2>Coming to Canton Venues</h2>
     <p class="sub">Trading on Canton, no public market data yet: {e(coming)}. Run one of these? <a href="/#contact">Get in touch</a>.</p>

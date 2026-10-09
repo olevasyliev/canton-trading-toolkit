@@ -1080,3 +1080,18 @@ def test_a_perps_venue_without_a_lead_still_says_what_it_trades():
     head = vp.headline(f)
     assert head["title"] == "Ekiden on Canton"
     assert head["sub"] == "$104K of perpetuals traded in the last 24 hours" and head["big"] == "$104K"
+
+
+def test_index_shows_perps_book_depth_and_leaves_what_a_venue_lacks_blank():
+    d = data()
+    ms = d["perps"]["markets"]
+    ms[2]["depth_1pct_usd"], ms[3]["depth_1pct_usd"] = 300_000, 90_000
+    # a thin market's large resting quote is not the venue's depth
+    ms.append(dict(ms[-1], base="XAU", symbol="XAU", turnover_24h_usd=1.0, depth_1pct_usd=900_000))
+    f = vp.facts(d)
+    assert f["ekiden"]["perp_depth"] == {"symbol": "BTC", "usd": 300_000}
+    idx = vp.index_page(f, {s: vp.headline(x) for s, x in f.items()}, T)
+    row = lambda name: re.search(rf'<b>{name}</b>.*?</tr>', idx, re.DOTALL).group(0)
+    assert vp.money(300_000) in row("Ekiden") and "perps book depth within 1%" in row("Ekiden")
+    # Cantex has no perps: blank, not n/a; Rocky has perps but no open interest we can show: n/a
+    assert "n/a" not in row("Cantex") and "n/a" in row("Rocky")
