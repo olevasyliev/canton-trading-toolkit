@@ -46,7 +46,7 @@ FONTS = HERE / "fonts"
 
 # Every venue the collector reads live. "rows" are its ids in venues.json (Rocky's spot and
 # perp books are two rows but one venue). "x" is the venue's own X account, only when the
-# venue's own website links it; "x_source" is where that link was read (2026-10-07).
+# venue's own website links it, or the founder confirmed it; "x_source" is where it came from.
 VENUES = [
     {"slug": "temple", "name": "Temple", "rows": ["temple"], "site": "https://templedigitalgroup.com",
      "x": "temple_ny", "x_source": "https://templedigitalgroup.com"},
@@ -61,10 +61,11 @@ VENUES = [
      "x": "TradecraftFi", "x_source": "https://tradecraft.fi"},
     {"slug": "ekiden", "name": "Ekiden", "rows": ["ekiden"], "site": "https://ekiden.fi",
      "x": "ekidenfi", "x_source": "https://ekiden.fi"},
-    # neither site nor docs link an X account: the share text names the venue without a tag
-    {"slug": "oneswap", "name": "OneSwap", "rows": ["oneswap"], "site": "https://www.oneswap.cc", "x": None},
+    # neither site links an X account; the founder confirmed both handles (2026-10-09)
+    {"slug": "oneswap", "name": "OneSwap", "rows": ["oneswap"], "site": "https://www.oneswap.cc",
+     "x": "Oneswapcc", "x_source": "founder, 2026-10-09"},
     {"slug": "pool-party", "name": "Pool Party", "rows": ["poolparty"], "site": "https://poolparty.fun",
-     "x": None},
+     "x": "PoolPartyDEX", "x_source": "founder, 2026-10-09"},
 ]
 # Venues whose book figures (depth, spread) are read with our own account key: nobody outside can
 # check them, so the card leaves them out (Temple: TEMPLE_API_KEY; its settled volume needs none).

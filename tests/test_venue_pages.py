@@ -213,10 +213,11 @@ def test_page_carries_its_own_social_card_and_share_link(tmp_path):
     q = parse_qs(urlparse(intent).query)
     assert q["text"][0].startswith("Where Temple (@temple_ny) leads on Canton Venues: the largest spot venue")
     assert "Largest spot venue on Canton" in page and "Next:" not in page and q["url"] == ["https://cantonvenues.com/venues/temple/"]
-    # no verified handle: the venue is named, nobody is tagged
+    # a plain card (no lead) tags the venue too, and the page links its X account
     one = (tmp_path / "venues" / "oneswap" / "index.html").read_text()
     oq = parse_qs(urlparse(next(h for h in _links(one) if "intent/post" in h)).query)
-    assert oq["text"][0].startswith("OneSwap on Canton Venues") and "@" not in oq["text"][0]
+    assert oq["text"][0].startswith("OneSwap (@Oneswapcc) on Canton Venues")
+    assert "https://x.com/Oneswapcc" in _links(one)
     assert 'href="temple/"' in (tmp_path / "venues" / "index.html").read_text()
 
 
